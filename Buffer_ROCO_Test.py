@@ -43,22 +43,20 @@ import argparse
 #         # ROCO text processing is not implemented here.
 #         raise NotImplementedError("Text embedding extraction for ROCO is not yet implemented.")
 #     return
-@torch.no_grad()
+
 @torch.no_grad()
 def textprocess(args, testloader):
-    net = CLIPModel_full(args).to('cuda')
+    net = CLIPModel_full(args).to('cpu')    # Process on CPU
     net.eval()
     texts = testloader.dataset.text
 
-    # Set up chunking similar to textprocess_train
     chunk_size = 2000
     chunks = []
     for i in range(0, len(texts), chunk_size):
         chunk = net.text_encoder(texts[i:i + chunk_size])
         chunks.append(chunk)
-        # Optionally: torch.cuda.empty_cache() if fragmentation is an issue
     bert_test_embed = torch.cat(chunks, dim=0)
-    bert_test_embed_np = bert_test_embed.cpu().numpy()
+    bert_test_embed_np = bert_test_embed.numpy()
     np.savez(f'{args.dataset}_{args.text_encoder}_text_embed.npz', bert_test_embed=bert_test_embed_np)
     return
 @torch.no_grad()
