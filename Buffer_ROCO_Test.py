@@ -46,16 +46,16 @@ import argparse
 
 @torch.no_grad()
 def textprocess(args, testloader):
-    net = CLIPModel_full(args).to('cuda')  # Ensure model is on GPU
+    net = CLIPModel_full(args).to('cuda')
     net.eval()
     texts = testloader.dataset.text
 
-    chunk_size = 1000  # Reduce batch size to avoid memory issues
+    chunk_size = 1000  # Reduce chunk size from 2000 to 1000
     chunks = []
     for i in range(0, len(texts), chunk_size):
-        chunk = net.text_encoder(texts[i:i + chunk_size].to('cuda'))  # Ensure input is on GPU
-        chunks.append(chunk.cpu())  # Move output to CPU
-        torch.cuda.empty_cache()  # Free memory
+        chunk = net.text_encoder(texts[i:i + chunk_size]).cpu()  # Store output on CPU
+        chunks.append(chunk)
+        torch.cuda.empty_cache()  # Free unused memory
 
     bert_test_embed = torch.cat(chunks, dim=0)
     bert_test_embed_np = bert_test_embed.numpy()
