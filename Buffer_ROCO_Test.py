@@ -25,23 +25,44 @@ from tqdm import tqdm
 import argparse
 
 @torch.no_grad()
+# def textprocess(args, testloader):
+#     net = CLIPModel_full(args).to('cuda')
+#     net.eval()
+#     texts = testloader.dataset.text
+#     if args.dataset in ['flickr', 'coco']:
+#         if args.dataset == 'flickr':
+#             bert_test_embed = net.text_encoder(texts)
+#         elif args.dataset == 'coco':
+#             bert_test_embed = torch.cat(
+#                 (net.text_encoder(texts[:10000]),
+#                  net.text_encoder(texts[10000:20000]),
+#                  net.text_encoder(texts[20000:])), dim=0)
+#         bert_test_embed_np = bert_test_embed.cpu().numpy()
+#         np.savez(f'{args.dataset}_{args.text_encoder}_text_embed.npz', bert_test_embed=bert_test_embed_np)
+#     else:
+#         # ROCO text processing is not implemented here.
+#         raise NotImplementedError("Text embedding extraction for ROCO is not yet implemented.")
+#     return
+@torch.no_grad()
 def textprocess(args, testloader):
     net = CLIPModel_full(args).to('cuda')
     net.eval()
     texts = testloader.dataset.text
-    if args.dataset in ['flickr', 'coco']:
-        if args.dataset == 'flickr':
-            bert_test_embed = net.text_encoder(texts)
-        elif args.dataset == 'coco':
-            bert_test_embed = torch.cat(
-                (net.text_encoder(texts[:10000]),
-                 net.text_encoder(texts[10000:20000]),
-                 net.text_encoder(texts[20000:])), dim=0)
-        bert_test_embed_np = bert_test_embed.cpu().numpy()
-        np.savez(f'{args.dataset}_{args.text_encoder}_text_embed.npz', bert_test_embed=bert_test_embed_np)
+    if args.dataset == 'flickr':
+        bert_test_embed = net.text_encoder(texts)
+    elif args.dataset == 'coco':
+        bert_test_embed = torch.cat(
+            (net.text_encoder(texts[:10000]),
+             net.text_encoder(texts[10000:20000]),
+             net.text_encoder(texts[20000:])), dim=0)
+    elif args.dataset == 'roco':
+        # Use the same processing as for flickr (or adjust if needed)
+        bert_test_embed = net.text_encoder(texts)
     else:
-        # ROCO text processing is not implemented here.
-        raise NotImplementedError("Text embedding extraction for ROCO is not yet implemented.")
+        raise NotImplementedError("Text embedding extraction for this dataset is not yet implemented.")
+    
+    bert_test_embed_np = bert_test_embed.cpu().numpy()
+    np.savez(f'{args.dataset}_{args.text_encoder}_text_embed.npz', bert_test_embed=bert_test_embed_np)
     return
 
 @torch.no_grad()
