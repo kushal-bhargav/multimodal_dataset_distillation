@@ -1,20 +1,163 @@
-import os
-import argparse
+###############################################
+# buffer.py
+###############################################
+
+from torchvision import transforms
+from transform.randaugment import RandomAugment
+from torchvision.transforms.functional import InterpolationMode
 import torch
-from epoch import epoch, epoch_test, itm_eval
+from torch.utils.data import DataLoader, Dataset
+from torchvision.datasets.utils import download_url
+import json
+from PIL import Image
+import os
+from torchvision import transforms as T
+from networks import CLIPModel_full
+
+# Import Flickr and COCO dataset functions as before.
+from data.flickr30k_dataset import flickr30k_train, flickr30k_retrieval_eval
+from data.coco_dataset import coco_train, coco_caption_eval, coco_retrieval_eval
+# Import the ROCO dataset functions from your custom file.
+from data.rocov2Radiology_dataset import roco_train, roco_retrieval_eval
+
+import numpy as np
+from tqdm import tqdm
+import torch
+import argparse
+
+@torch.no_grad()
+def textprocess(args, testloader):
+    net = CLIPModel_full(args).to('cuda')
+    net.eval() 
+    texts = testloader.dataset.text 
+    if args.dataset in ['flickr', 'coco']:
+        if args.dataset == 'flickr':
+            bert_test_embed = net.text_encoder(texts)
+        elif args.dataset == 'coco':
+            bert_test_embed = torch.cat((net.text_encoder(texts[:10000]),
+                                           net.text_encoder(texts[10000:20000]),
+                                           net.text_encoder(texts[20000:])), dim=0)
+        bert_test_embed_np = bert_test_embed.cpu().numpy()
+        np.savez(f'{args.dataset}_{args.text_encoder}_text_embed.npz', bert_test_embed=bert_test_embed_np) 
+    else:
+        # ROCO text processing is not implemented here.
+        raise NotImplementedError("Text embedding extraction for ROCO is not yet implemented.")
+    return 
+
+@torch.no_grad()
+def textprocess_train(args, texts):
+    net = CLIPModel_full(args).to('cuda')
+    net.eval() 
+    chunk_size = 2000
+    chunks = []
+    for i in tqdm(range(0, len(texts), chunk_size)):
+        chunk = net.text_encoder(texts[i:i + chunk_size]).cpu()
+        chunks.append(chunk)
+        del chunk
+        torch.cuda.empty_cache()  # free up memory
+    bert_test_embed = torch.cat(chunks, dim=0)
+    print('bert_test_embed.shape: ', bert_test_embed.shape)
+    bert_test_embed_np = bert_test_embed.numpy()
+    if args.dataset in ['flickr', 'coco']:
+        np.savez(f'{args.dataset}_{args.text_encoder}_train_text_embed.npz', bert_test_embed=bert_test_embed_np) 
+    else:
+        raise NotImplementedError("Text embedding extraction for ROCO is not yet implemented.")
+    return 
+
+def create_dataset(args, min_scale=0.5):
+    normalize = transforms.Normalize(
+        (0.48145466, 0.4578275, 0.40821073),
+        (0.26862954, 0.26130258, 0.27577711))
+    transform_train = transforms.Compose([
+            transforms.RandomResizedCrop(args.image_size, scale=(min_scale, 1.0), interpolation=InterpolationMode.BICUBIC),
+            transforms.RandomHorizontalFlip(),
+            RandomAugment(2, 5, isPIL=True, augs=[
+                'Identity','AutoContrast','Brightness','Sharpness','Equalize',
+                'ShearX','ShearY','TranslateX','TranslateY','Rotate']),
+            transforms.ToTensor(),
+            normalize,
+        ])
+    transform_test = transforms.Compose([
+        transforms.Resize((args.image_size, args.image_size), interpolation=InterpolationMode.BICUBIC),
+        transforms.ToTensor(),
+        normalize,
+        ])
+    
+    if args.dataset == 'flickr':          
+        train_dataset = flickr30k_train(transform_train, args.image_root, args.ann_root)
+        val_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
+        test_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
+        return train_dataset, val_dataset, test_dataset    
+    elif args.dataset == 'coco':             
+        train_dataset = coco_train(transform_train, args.image_root, args.ann_root)
+        val_dataset = coco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
+        test_dataset = coco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
+        return train_dataset, val_dataset, test_dataset     
+    elif args.dataset == 'roco':
+        train_dataset = roco_train(transform_train, args.image_root, args.ann_root)
+        val_dataset = roco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
+        test_dataset = roco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
+        return train_dataset, val_dataset, test_dataset 
+    else: 
+        raise NotImplementedError
+
+def create_sampler(datasets, shuffles, num_tasks, global_rank):
+    samplers = []
+    for dataset, shuffle in zip(datasets, shuffles):
+        sampler = torch.utils.data.DistributedSampler(dataset, num_replicas=num_tasks, rank=global_rank, shuffle=shuffle)
+        samplers.append(sampler)
+    return samplers     
+
+def create_loader(datasets, samplers, batch_size, num_workers, is_trains, collate_fns):
+    loaders = []
+    for dataset, sampler, bs, n_worker, is_train, collate_fn in zip(datasets, samplers, batch_size, num_workers, is_trains, collate_fns):
+        if is_train:
+            shuffle = (sampler is None)
+            drop_last = True
+        else:
+            shuffle = False
+            drop_last = False
+        loader = DataLoader(
+            dataset,
+            batch_size=bs,
+            num_workers=n_worker,
+            pin_memory=True,
+            sampler=sampler,
+            shuffle=shuffle,
+            collate_fn=collate_fn,
+            drop_last=drop_last,
+        )              
+        loaders.append(loader)
+    return loaders     
+
+def get_dataset_flickr(args):
+    print("Creating retrieval dataset")
+    train_dataset, val_dataset, test_dataset = create_dataset(args)
+    samplers = [None, None, None]
+    train_shuffle = True
+    train_loader, val_loader, test_loader = create_loader(
+        [train_dataset, val_dataset, test_dataset],
+        samplers,
+        batch_size=[args.batch_size_train] + [args.batch_size_test] * 2,
+        num_workers=[4, 4, 4],
+        is_trains=[train_shuffle, False, False],
+        collate_fns=[None, None, None])
+    return train_loader, test_loader, train_dataset, test_dataset
+
+###############################################
+# Main Buffer Distillation Script
+###############################################
+
 import wandb
 import warnings
 import datetime
-# Import the ROCO dataset loader and text processing function instead of Flickr’s.
-from data import get_dataset_roco, textprocess_roco  
-from networks import CLIPModel_full
+from epoch import epoch, epoch_test, itm_eval
 from utils import load_or_process_file
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 def main(args):
-    # Initialize wandb for logging (disable by removing the comment in wandb.init(mode="disabled") if needed).
-    #wandb.init(mode="disabled")
+    # Initialize wandb
     wandb.init(project='DatasetDistillation', entity='dataset_distillation', config=args, name=args.name)
 
     args.dsa = True if args.dsa == 'True' else False
@@ -23,7 +166,7 @@ def main(args):
 
     print('Hyper-parameters: \n', args.__dict__)
 
-    # Create the directory where synthesized buffers will be saved.
+    # Create directory for saving replay buffers; output under /kaggle/working by default.
     save_dir = os.path.join(args.buffer_path, args.dataset)
     if args.dataset in ["CIFAR10", "CIFAR100"] and not args.zca:
         save_dir += "_NO_ZCA"
@@ -32,17 +175,26 @@ def main(args):
         os.makedirs(save_dir)
 
     ''' Organize the datasets '''
-    # Change the dataset loader call to get_dataset_roco(args) instead of get_dataset_flickr(args)
-    trainloader, testloader, train_dataset, test_dataset = get_dataset_roco(args)
-    # Use a ROCO-specific text processing function (if necessary) in place of textprocess.
-    data = load_or_process_file('text', textprocess_roco, args, testloader)
+    if args.dataset == 'flickr':
+        trainloader, testloader, train_dataset, test_dataset = get_dataset_flickr(args)
+        data = load_or_process_file('text', textprocess, args, testloader)
+    elif args.dataset == 'roco':
+        # Call the ROCO branch of dataset creation.
+        trainloader, testloader, train_dataset, test_dataset = get_dataset_flickr(args)
+        data = load_or_process_file('text', textprocess, args, testloader)
+        # (If you implement ROCO text processing, replace textprocess above with textprocess_roco)
+    elif args.dataset == 'coco':
+        trainloader, testloader, train_dataset, test_dataset = get_dataset_flickr(args)
+        data = load_or_process_file('text', textprocess, args, testloader)
+    else:
+        raise NotImplementedError("Dataset not implemented")
+    
     bert_test_embed = torch.from_numpy(data['bert_test_embed']).cpu()
 
     img_trajectories = []
     txt_trajectories = []
 
     for it in range(0, args.num_experts):
-
         ''' Train synthetic data '''
         teacher_net = CLIPModel_full(args)
         img_teacher_net = teacher_net.image_encoder.to(args.device)
@@ -69,7 +221,6 @@ def main(args):
         txt_timestamps.append([p.detach().cpu() for p in txt_teacher_net.parameters()])
 
         lr_schedule = [args.train_epochs // 2 + 1]
-        # Optionally initialize lr as a variable to support decay.
         lr = lr_img
 
         for e in range(args.train_epochs):
@@ -112,10 +263,8 @@ def main(args):
         torch.save(img_trajectories, os.path.join(save_dir, "img_replay_buffer_{}.pt".format(n)))
         print("Saving {}".format(os.path.join(save_dir, "txt_replay_buffer_{}.pt".format(n))))
         torch.save(txt_trajectories, os.path.join(save_dir, "txt_replay_buffer_{}.pt".format(n)))
-
         img_trajectories = []
         txt_trajectories = []
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Parameter Processing')
@@ -129,7 +278,7 @@ if __name__ == '__main__':
     parser.add_argument('--dsa_strategy', type=str, default='color_crop_cutout_flip_scale_rotate',
                         help='differentiable Siamese augmentation strategy')
     parser.add_argument('--data_path', type=str, default='/kaggle/input/roco-dataset/', help='dataset path')
-    parser.add_argument('--buffer_path', type=str, default='./buffers', help='buffer path')
+    parser.add_argument('--buffer_path', type=str, default='/kaggle/working', help='buffer path')
     parser.add_argument('--train_epochs', type=int, default=50)
     parser.add_argument('--zca', action='store_true')
     parser.add_argument('--decay', action='store_true')
@@ -151,15 +300,11 @@ if __name__ == '__main__':
     parser.add_argument('--load_npy', type=bool, default=False, help='load_npy')
     parser.add_argument('--image_encoder', type=str, default='resnet50', choices=['nfnet', 'resnet18_gn', 'vit_tiny', 'nf_resnet50', 'nf_regnet'], help='image encoder')
     parser.add_argument('--text_encoder', type=str, default='bert', choices=['bert', 'clip'], help='text encoder')
-    parser.add_argument('--margin', default=0.2, type=float,
-                        help='Rank loss margin.')
-    parser.add_argument('--measure', default='cosine',
-                        help='Similarity measure used (cosine|order)')
-    parser.add_argument('--max_violation', action='store_true',
-                        help='Use max instead of sum in the rank loss.')
+    parser.add_argument('--margin', default=0.2, type=float, help='Rank loss margin.')
+    parser.add_argument('--measure', default='cosine', help='Similarity measure used (cosine|order)')
+    parser.add_argument('--max_violation', action='store_true', help='Use max instead of sum in the rank loss.')
     parser.add_argument('--only_has_image_projection', type=bool, default=False, help='None')
     parser.add_argument('--grounding', type=bool, default=False, help='None')
     parser.add_argument('--distill', type=bool, default=False, help='if distill')
     args = parser.parse_args()
-
     main(args)
