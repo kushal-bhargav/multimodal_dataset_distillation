@@ -160,12 +160,17 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 def main(args):
     # Initialize wandb
     # wandb.init(project='DatasetDistillation', entity='dataset_distillation', config=args, name=args.name)
-    if not args.disable_wandb:
+    if args.disable_wandb:
+        # Force WandB into disabled mode
+        import os
         os.environ["WANDB_MODE"] = "disabled"
+        import wandb
         wandb.init(mode="disabled")
         print("wandb logging disabled.")
     else:
+        import wandb
         wandb.init(project='DatasetDistillation', entity='dataset_distillation', config=args, name=args.name)
+   
     
     args.dsa = True if args.dsa == 'True' else False
     args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
