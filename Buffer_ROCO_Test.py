@@ -159,8 +159,14 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 def main(args):
     # Initialize wandb
-    wandb.init(project='DatasetDistillation', entity='dataset_distillation', config=args, name=args.name)
-
+    # wandb.init(project='DatasetDistillation', entity='dataset_distillation', config=args, name=args.name)
+    if not args.disable_wandb:
+        os.environ["WANDB_MODE"] = "disabled"
+        wandb.init(mode="disabled")
+        print("wandb logging disabled.")
+    else:
+        wandb.init(project='DatasetDistillation', entity='dataset_distillation', config=args, name=args.name)
+    
     args.dsa = True if args.dsa == 'True' else False
     args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
     args.distributed = torch.cuda.device_count() > 1
@@ -269,6 +275,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Parameter Processing')
+    parser.add_argument('--disable_wandb', action='store_true', help='Disable wandb logging')
     parser.add_argument('--dataset', type=str, default='roco', choices=['roco', 'coco'], help='dataset')
     parser.add_argument('--num_experts', type=int, default=100, help='training iterations')
     parser.add_argument('--lr_teacher_img', type=float, default=0.1, help='learning rate for updating network parameters')
