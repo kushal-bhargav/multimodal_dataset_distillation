@@ -54,12 +54,12 @@ class roco_train(Dataset):
     def __getitem__(self, index):
         img_name, caption = self.annotations[index]
         image_path = os.path.join(self.image_root, img_name)
-        
+
         # Load and preprocess image
         image = Image.open(image_path).convert('RGB')
         if self.transform:
             image = self.transform(image)
-        
+
         caption_final = self.prompt + pre_caption(caption, self.max_words)
         return image, caption_final, self.img_ids[self.df.iloc[index]['id']]
 
@@ -75,6 +75,7 @@ class roco_retrieval_eval(Dataset):
         Args:
             transform (callable): Image transformations.
             image_root (str): Root directory for evaluation images.
+                (e.g. /kaggle/input/roco-dataset/all_data/validation/radiology/images)
             ann_file (str): CSV file with evaluation annotations.
             split (str): "val" or "test".
             max_words (int): Maximum words allowed in captions.
@@ -83,12 +84,12 @@ class roco_retrieval_eval(Dataset):
         self.transform = transform
         self.image_root = image_root
         self.max_words = max_words
-        
+
         self.text = []     # List of preprocessed captions.
         self.image = []    # List of image filenames.
         self.txt2img = {}  # Map from text index to image index.
         self.img2txt = {}  # Map from image index to list of text indices.
-        
+
         txt_id = 0
         for img_idx, row in self.df.iterrows():
             self.image.append(row['name'])
