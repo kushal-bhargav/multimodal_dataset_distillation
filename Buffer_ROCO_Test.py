@@ -46,19 +46,22 @@ import argparse
 
 @torch.no_grad()
 def textprocess(args, testloader):
-    net = CLIPModel_full(args).to('cpu')    # Process on CPU
+    net = CLIPModel_full(args).to('cuda')  # Ensure model is on GPU
     net.eval()
     texts = testloader.dataset.text
 
-    chunk_size = 2000
+    chunk_size = 1000  # Reduce batch size to avoid memory issues
     chunks = []
     for i in range(0, len(texts), chunk_size):
-        chunk = net.text_encoder(texts[i:i + chunk_size])
-        chunks.append(chunk)
+        chunk = net.text_encoder(texts[i:i + chunk_size].to('cuda'))  # Ensure input is on GPU
+        chunks.append(chunk.cpu())  # Move output to CPU
+        torch.cuda.empty_cache()  # Free memory
+
     bert_test_embed = torch.cat(chunks, dim=0)
     bert_test_embed_np = bert_test_embed.numpy()
     np.savez(f'{args.dataset}_{args.text_encoder}_text_embed.npz', bert_test_embed=bert_test_embed_np)
     return
+    
 @torch.no_grad()
 def textprocess_train(args, texts):
     net = CLIPModel_full(args).to('cuda')
