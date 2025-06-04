@@ -22,32 +22,32 @@ from data.rocov2Radiology_dataset import roco_train, roco_retrieval_eval
 
 import numpy as np
 from tqdm import tqdm
-import torch
 import argparse
 
 @torch.no_grad()
 def textprocess(args, testloader):
     net = CLIPModel_full(args).to('cuda')
-    net.eval() 
-    texts = testloader.dataset.text 
+    net.eval()
+    texts = testloader.dataset.text
     if args.dataset in ['flickr', 'coco']:
         if args.dataset == 'flickr':
             bert_test_embed = net.text_encoder(texts)
         elif args.dataset == 'coco':
-            bert_test_embed = torch.cat((net.text_encoder(texts[:10000]),
-                                           net.text_encoder(texts[10000:20000]),
-                                           net.text_encoder(texts[20000:])), dim=0)
+            bert_test_embed = torch.cat(
+                (net.text_encoder(texts[:10000]),
+                 net.text_encoder(texts[10000:20000]),
+                 net.text_encoder(texts[20000:])), dim=0)
         bert_test_embed_np = bert_test_embed.cpu().numpy()
-        np.savez(f'{args.dataset}_{args.text_encoder}_text_embed.npz', bert_test_embed=bert_test_embed_np) 
+        np.savez(f'{args.dataset}_{args.text_encoder}_text_embed.npz', bert_test_embed=bert_test_embed_np)
     else:
         # ROCO text processing is not implemented here.
         raise NotImplementedError("Text embedding extraction for ROCO is not yet implemented.")
-    return 
+    return
 
 @torch.no_grad()
 def textprocess_train(args, texts):
     net = CLIPModel_full(args).to('cuda')
-    net.eval() 
+    net.eval()
     chunk_size = 2000
     chunks = []
     for i in tqdm(range(0, len(texts), chunk_size)):
@@ -59,54 +59,55 @@ def textprocess_train(args, texts):
     print('bert_test_embed.shape: ', bert_test_embed.shape)
     bert_test_embed_np = bert_test_embed.numpy()
     if args.dataset in ['flickr', 'coco']:
-        np.savez(f'{args.dataset}_{args.text_encoder}_train_text_embed.npz', bert_test_embed=bert_test_embed_np) 
+        np.savez(f'{args.dataset}_{args.text_encoder}_train_text_embed.npz', bert_test_embed=bert_test_embed_np)
     else:
         raise NotImplementedError("Text embedding extraction for ROCO is not yet implemented.")
-    return 
+    return
 
 def create_dataset(args, min_scale=0.5):
     normalize = transforms.Normalize(
         (0.48145466, 0.4578275, 0.40821073),
         (0.26862954, 0.26130258, 0.27577711))
     transform_train = transforms.Compose([
-            transforms.RandomResizedCrop(args.image_size, scale=(min_scale, 1.0), interpolation=InterpolationMode.BICUBIC),
-            transforms.RandomHorizontalFlip(),
-            RandomAugment(2, 5, isPIL=True, augs=[
-                'Identity','AutoContrast','Brightness','Sharpness','Equalize',
-                'ShearX','ShearY','TranslateX','TranslateY','Rotate']),
-            transforms.ToTensor(),
-            normalize,
-        ])
+        transforms.RandomResizedCrop(args.image_size, scale=(min_scale, 1.0), interpolation=InterpolationMode.BICUBIC),
+        transforms.RandomHorizontalFlip(),
+        RandomAugment(2, 5, isPIL=True, augs=[
+            'Identity', 'AutoContrast', 'Brightness', 'Sharpness', 'Equalize',
+            'ShearX', 'ShearY', 'TranslateX', 'TranslateY', 'Rotate'
+        ]),
+        transforms.ToTensor(),
+        normalize,
+    ])
     transform_test = transforms.Compose([
         transforms.Resize((args.image_size, args.image_size), interpolation=InterpolationMode.BICUBIC),
         transforms.ToTensor(),
         normalize,
-        ])
-    
-    if args.dataset == 'flickr':          
+    ])
+
+    if args.dataset == 'flickr':
         train_dataset = flickr30k_train(transform_train, args.image_root, args.ann_root)
         val_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
         test_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
-        return train_dataset, val_dataset, test_dataset    
-    elif args.dataset == 'coco':             
+        return train_dataset, val_dataset, test_dataset
+    elif args.dataset == 'coco':
         train_dataset = coco_train(transform_train, args.image_root, args.ann_root)
         val_dataset = coco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
         test_dataset = coco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
-        return train_dataset, val_dataset, test_dataset     
+        return train_dataset, val_dataset, test_dataset
     elif args.dataset == 'roco':
         train_dataset = roco_train(transform_train, args.image_root, args.ann_root)
         val_dataset = roco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
         test_dataset = roco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
-        return train_dataset, val_dataset, test_dataset 
-    else: 
-        raise NotImplementedError
+        return train_dataset, val_dataset, test_dataset
+    else:
+        raise NotImplementedError("Dataset not implemented")
 
 def create_sampler(datasets, shuffles, num_tasks, global_rank):
     samplers = []
     for dataset, shuffle in zip(datasets, shuffles):
         sampler = torch.utils.data.DistributedSampler(dataset, num_replicas=num_tasks, rank=global_rank, shuffle=shuffle)
         samplers.append(sampler)
-    return samplers     
+    return samplers
 
 def create_loader(datasets, samplers, batch_size, num_workers, is_trains, collate_fns):
     loaders = []
@@ -126,9 +127,9 @@ def create_loader(datasets, samplers, batch_size, num_workers, is_trains, collat
             shuffle=shuffle,
             collate_fn=collate_fn,
             drop_last=drop_last,
-        )              
+        )
         loaders.append(loader)
-    return loaders     
+    return loaders
 
 def get_dataset_flickr(args):
     print("Creating retrieval dataset")
