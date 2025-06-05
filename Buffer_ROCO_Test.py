@@ -516,7 +516,6 @@ from epoch import epoch, epoch_test, itm_eval  # epoch_test should be modified t
 from utils import load_or_process_file
 
 def main(args):
-    def main(args):
     # Initialize wandb
     # wandb.init(project='DatasetDistillation', entity='dataset_distillation', config=args, name=args.name)
     if args.disable_wandb:
