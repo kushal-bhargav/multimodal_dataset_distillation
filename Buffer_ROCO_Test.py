@@ -316,8 +316,9 @@
 #     parser.add_argument('--measure', default='cosine', help='Similarity measure used (cosine|order)')
 #     parser.add_argument('--max_violation', action='store_true', help='Use max instead of sum in the rank loss.')
 #     parser.add_argument('--only_has_image_projection', type=bool, default=False, help='None')
+
 ###############################################
-# buffer.py
+# Buffer_ROCO_Test.py
 ###############################################
 
 from torchvision import transforms
