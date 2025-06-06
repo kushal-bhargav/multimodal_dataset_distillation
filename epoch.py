@@ -9,6 +9,10 @@
  * By Junnan Li
 '''
 
+import os
+# Enable expandable segments to help reduce fragmentation
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import numpy as np
 import torch
 import time
@@ -72,13 +76,13 @@ def epoch_test(dataloader, model, device, bert_test_embed):
     This function is adapted from BLIP's code (by Junnan Li) with modifications
     to compute the similarity matrix in very small chunks on the CPU rather than GPU.
     This avoids OOM errors.
-    
+
     Args:
         dataloader (torch.utils.data.DataLoader): DataLoader for images.
         model: The model.
         device: Device string ('cuda' or 'cpu') for feature extraction.
         bert_test_embed: Pre-computed text embeddings (BERT features)
-    
+
     Returns:
         A tuple of two numpy arrays representing the image-to-text and text-to-image scores.
     """
@@ -104,7 +108,7 @@ def epoch_test(dataloader, model, device, bert_test_embed):
         im_embed = image_feat / image_feat.norm(dim=1, keepdim=True)
         image_embeds_list.append(im_embed)
     image_embeds = torch.cat(image_embeds_list, dim=0)
-    # Optionally use image projection if your model supports it.
+    # Optionally use an image projection if your model supports it.
     use_image_projection = False
     if use_image_projection:
         im_proj = model.image_projection(image_embeds.float())
@@ -122,8 +126,8 @@ def epoch_test(dataloader, model, device, bert_test_embed):
     # --- Compute similarity matrix in very small chunks on CPU ---
     B = image_embeds.size(0)
     N = text_embeds.size(0)
-    # Lower chunk size to reduce instantaneous memory requirements.
-    chunk_size = 64
+    # Lower chunk size further to reduce instantaneous memory requirements.
+    chunk_size = 32
     sims_list = []
     for i in range(0, N, chunk_size):
         text_chunk = text_embeds[i:min(i+chunk_size, N)]
@@ -133,7 +137,7 @@ def epoch_test(dataloader, model, device, bert_test_embed):
         gc.collect()
     sims_matrix = torch.cat(sims_list, dim=1)  # Final shape: (B, N)
 
-    # Log GPU memory usage (if any GPU is still in use)
+    # Optionally log GPU memory usage if device is CUDA
     if device.lower().startswith("cuda"):
         print(torch.cuda.memory_summary(device=device, abbreviated=True))
 
@@ -164,13 +168,13 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
     """
     Evaluate image-text matching. Computes retrieval metrics for both image-to-text and text-to-image.
     This function is adapted from the BLIP repository.
-    
+
     Args:
         scores_i2t (np.array): Similarity scores computed for image-to-text retrieval.
         scores_t2i (np.array): Similarity scores computed for text-to-image retrieval.
         txt2img (list or np.array): Ground-truth mapping from text captions to image indices.
         img2txt (list or np.array): Ground-truth mapping from images to text indices.
-    
+
     Returns:
         Dictionary containing retrieval metrics.
     """
@@ -223,7 +227,7 @@ def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, 
     """
     Additional evaluation function to assess performance on a training subset (the "synset").
     This function trains the network on the given training data and evaluates using epoch_test() and itm_eval().
-    
+
     Args:
         it_eval: Evaluation iteration.
         net: The model.
@@ -233,7 +237,7 @@ def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, 
         args: Arguments.
         bert_test_embed: Pre-computed text embeddings.
         return_loss: Whether or not to return training loss.
-    
+
     Returns:
         A tuple (net, acc_train_list, val_result)
     """
