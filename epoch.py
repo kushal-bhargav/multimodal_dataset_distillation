@@ -114,7 +114,7 @@ def epoch_test(dataloader, model, device, bert_test_embed):
     print("DEBUG: Starting similarity matrix computation on CPU...")
     B = image_embeds.size(0)
     N = text_embeds.size(0)
-    chunk_size = 32  # You may lower this to 16 if needed
+    chunk_size = 16
     sims_list = []
     for i in range(0, N, chunk_size):
         try:
