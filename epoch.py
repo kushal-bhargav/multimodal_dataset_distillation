@@ -1,9 +1,11 @@
 '''
- * part of the code (i.e. def epoch_test() and itm_eval()) is from: https://github.com/salesforce/BLIP/blob/main/train_retrieval.py#L69
+ * part of the code (i.e. def epoch_test() and itm_eval()) is from:
+   https://github.com/salesforce/BLIP/blob/main/train_retrieval.py#L69
  * Copyright (c) 2022, salesforce.com, inc.
  * All rights reserved.
  * SPDX-License-Identifier: BSD-3-Clause
- * For full license text, see LICENSE.txt file in the repo root or https://opensource.org/licenses/BSD-3-Clause
+ * For full license text, see LICENSE.txt file in the repo root or 
+   https://opensource.org/licenses/BSD-3-Clause
  * By Junnan Li
 '''
 
@@ -16,6 +18,7 @@ from tqdm import tqdm
 import torch.nn as nn
 from utils import *
 from torch.utils.data import TensorDataset
+import gc
 
 def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
     """
@@ -79,59 +82,70 @@ def epoch_test(dataloader, model, device, bert_test_embed):
     Returns:
         A tuple of two numpy arrays representing the image-to-text and text-to-image scores.
     """
-    model.eval() 
+    model.eval()
     # Set logit scale as used in BLIP
     logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
     print('Computing features for evaluation...')
-    start_time = time.time()  
+    start_time = time.time()
 
-    # Compute normalized text embeddings on the GPU first...
+    # --- Compute text embeddings ---
+    # First, compute and normalize text embeddings on GPU
     txt_embed = model.text_projection(bert_test_embed.float().to(device))
     text_embeds = txt_embed / txt_embed.norm(dim=1, keepdim=True)
-    # Now move text embeddings to CPU to free GPU memory.
+    # Now move text embeddings to CPU to free GPU memory
     text_embeds = text_embeds.cpu()
+    torch.cuda.empty_cache()
+    gc.collect()
 
-    # Compute normalized image embeddings from dataloader.
+    # --- Compute image embeddings ---
     image_embeds_list = []
-    for image, img_id in dataloader: 
+    for image, img_id in tqdm(dataloader, desc="Extracting image embeddings"):
         image_feat = model.image_encoder(image.to(device))
         im_embed = image_feat / image_feat.norm(dim=1, keepdim=True)
         image_embeds_list.append(im_embed)
     image_embeds = torch.cat(image_embeds_list, dim=0)
-    # Optionally use an image projection if your model uses one.
+    # Optionally use image projection if your model supports it.
     use_image_projection = False
     if use_image_projection:
         im_proj = model.image_projection(image_embeds.float())
         image_embeds = im_proj / im_proj.norm(dim=1, keepdim=True)
     else:
         image_embeds = image_embeds / image_embeds.norm(dim=1, keepdim=True)
-    # Move image embeddings to CPU.
+    # Move image embeddings to CPU
     image_embeds = image_embeds.cpu()
+    torch.cuda.empty_cache()
+    gc.collect()
 
-    # Also bring logit scale (its exponential) to CPU.
+    # Bring logit scale (its exponential) to CPU as a scalar
     logit_scale_val = logit_scale.exp().item()
 
-    # --- Compute similarity matrix in very small chunks on the CPU ---
+    # --- Compute similarity matrix in very small chunks on CPU ---
     B = image_embeds.size(0)
     N = text_embeds.size(0)
     # Lower chunk size to reduce instantaneous memory requirements.
-    chunk_size = 128  
+    chunk_size = 64
     sims_list = []
     for i in range(0, N, chunk_size):
         text_chunk = text_embeds[i:min(i+chunk_size, N)]
-        # Compute similarity on CPU without occupying additional GPU memory.
+        # Compute similarity on CPU without further GPU usage.
         sims_chunk = logit_scale_val * (image_embeds @ text_chunk.t())
         sims_list.append(sims_chunk)
+        gc.collect()
     sims_matrix = torch.cat(sims_list, dim=1)  # Final shape: (B, N)
 
-    # Build image-to-text score matrix: for each image, record the top-k similarity scores.
+    # Log GPU memory usage (if any GPU is still in use)
+    if device.lower().startswith("cuda"):
+        print(torch.cuda.memory_summary(device=device, abbreviated=True))
+
+    # --- Build retrieval score matrices ---
+    # Build image-to-text score matrix (for each image, record top-k similarities)
     score_matrix_i2t = torch.full((B, N), -100.0)
     k = 128
     for i, sims in enumerate(sims_matrix):
         topk_sim, topk_idx = sims.topk(k=k, dim=0)
-        score_matrix_i2t[i, topk_idx] = topk_sim 
+        score_matrix_i2t[i, topk_idx] = topk_sim
 
-    # For text-to-image retrieval, use the transpose of the similarity matrix.
+    # For text-to-image retrieval, work with the transpose of the similarity matrix.
     sims_matrix_t = sims_matrix.t()  # shape: (N, B)
     score_matrix_t2i = torch.full((N, B), -100.0)
     for i, sims in enumerate(sims_matrix_t):
@@ -140,7 +154,7 @@ def epoch_test(dataloader, model, device, bert_test_embed):
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Evaluation time {}'.format(total_time_str)) 
+    print('Evaluation time {}'.format(total_time_str))
 
     return score_matrix_i2t.numpy(), score_matrix_t2i.numpy()
 
@@ -150,13 +164,13 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
     """
     Evaluate image-text matching. Computes retrieval metrics for both image-to-text and text-to-image.
     This function is adapted from the BLIP repository.
-
+    
     Args:
         scores_i2t (np.array): Similarity scores computed for image-to-text retrieval.
         scores_t2i (np.array): Similarity scores computed for text-to-image retrieval.
         txt2img (list or np.array): Ground-truth mapping from text captions to image indices.
         img2txt (list or np.array): Ground-truth mapping from images to text indices.
-
+    
     Returns:
         Dictionary containing retrieval metrics.
     """
@@ -165,7 +179,7 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
     print("TR: ", len(ranks))
     for index, score in enumerate(scores_i2t):
         inds = np.argsort(score)[::-1]
-        rank = 1e20  # set to a very large value
+        rank = 1e20  # start with a very large value
         for i in img2txt[index]:
             tmp = np.where(inds == i)[0][0]
             if tmp < rank:
@@ -185,7 +199,7 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
 
     ir1 = 100.0 * len(np.where(ranks < 1)[0]) / len(ranks)
     ir5 = 100.0 * len(np.where(ranks < 5)[0]) / len(ranks)
-    ir10 = 100.0 * len(np.where(ranks < 10)[0]) / len(ranks)        
+    ir10 = 100.0 * len(np.where(ranks < 10)[0]) / len(ranks)
     
     tr_mean = (tr1 + tr5 + tr10) / 3
     ir_mean = (ir1 + ir5 + ir10) / 3
@@ -209,7 +223,7 @@ def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, 
     """
     Additional evaluation function to assess performance on a training subset (the "synset").
     This function trains the network on the given training data and evaluates using epoch_test() and itm_eval().
-
+    
     Args:
         it_eval: Evaluation iteration.
         net: The model.
@@ -219,16 +233,15 @@ def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, 
         args: Arguments.
         bert_test_embed: Pre-computed text embeddings.
         return_loss: Whether or not to return training loss.
-
+    
     Returns:
         A tuple (net, acc_train_list, val_result)
     """
     net = net.to(args.device)
     images_train = images_train.to(args.device)
     labels_train = labels_train.to(args.device)
-    lr = float(args.lr_net) 
+    lr = float(args.lr_net)
     Epoch = int(args.epoch_eval_train)
-    lr_schedule = [Epoch//2+1]
     optimizer_img = torch.optim.SGD(net.image_encoder.parameters(), lr=lr, momentum=0.9, weight_decay=0.0005)
     optimizer_txt = torch.optim.SGD(net.text_projection.parameters(), lr=lr, momentum=0.9, weight_decay=0.0005)
 
@@ -246,10 +259,15 @@ def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, 
         if ep == Epoch:
             with torch.no_grad():
                 score_val_i2t, score_val_t2i = epoch_test(testloader, net, args.device, bert_test_embed)
-                val_result = itm_eval(score_val_i2t, score_val_t2i, testloader.dataset.txt2img, testloader.dataset.img2txt)  
-            lr *= 0.1 
+                print(f"score_val_i2t: {score_val_i2t}, score_val_t2i: {score_val_t2i}")
+                val_result = itm_eval(score_val_i2t, score_val_t2i,
+                                      testloader.dataset.txt2img,
+                                      testloader.dataset.img2txt)
+                print(f"val_result: {val_result}")
+            lr *= 0.1
             optimizer_img = torch.optim.SGD(net.image_encoder.parameters(), lr=lr, momentum=0.9, weight_decay=0.0005)
             optimizer_txt = torch.optim.SGD(net.text_projection.parameters(), lr=lr, momentum=0.9, weight_decay=0.0005)
 
     time_train = time.time() - start
+    print("Synset Evaluation Time:", str(datetime.timedelta(seconds=int(time_train))))
     return net, acc_train_list, val_result
