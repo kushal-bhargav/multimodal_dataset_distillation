@@ -67,75 +67,82 @@ def epoch_test(dataloader, model, device, bert_test_embed):
     """
     Evaluate the model on the retrieval task.
     This function is adapted from BLIP's code (by Junnan Li) with modifications
-    to compute the similarity matrix in smaller chunks to avoid CUDA OOM errors.
-
+    to compute the similarity matrix in very small chunks on the CPU rather than GPU.
+    This avoids OOM errors.
+    
     Args:
         dataloader (torch.utils.data.DataLoader): DataLoader for images.
         model: The model.
-        device: Device string ('cuda' or 'cpu')
+        device: Device string ('cuda' or 'cpu') for feature extraction.
         bert_test_embed: Pre-computed text embeddings (BERT features)
-
+    
     Returns:
         A tuple of two numpy arrays representing the image-to-text and text-to-image scores.
     """
     model.eval() 
-    # Use fixed logit scale as in BLIP
+    # Set logit scale as used in BLIP
     logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-    metric_logger = MetricLogger(delimiter="  ")
-    header = 'Evaluation:'    
     print('Computing features for evaluation...')
     start_time = time.time()  
 
-    # Compute normalized text embeddings
-    txt_embed = model.text_projection(bert_test_embed.float().to('cuda'))
-    text_embeds = txt_embed / txt_embed.norm(dim=1, keepdim=True)  # e.g. shape: (5000, 768)
-    text_embeds = text_embeds.to(device)
+    # Compute normalized text embeddings on the GPU first...
+    txt_embed = model.text_projection(bert_test_embed.float().to(device))
+    text_embeds = txt_embed / txt_embed.norm(dim=1, keepdim=True)
+    # Now move text embeddings to CPU to free GPU memory.
+    text_embeds = text_embeds.cpu()
 
-    # Compute normalized image embeddings from dataloader
-    image_embeds = []
+    # Compute normalized image embeddings from dataloader.
+    image_embeds_list = []
     for image, img_id in dataloader: 
         image_feat = model.image_encoder(image.to(device))
         im_embed = image_feat / image_feat.norm(dim=1, keepdim=True)
-        image_embeds.append(im_embed)
-    image_embeds = torch.cat(image_embeds, dim=0)
-    
+        image_embeds_list.append(im_embed)
+    image_embeds = torch.cat(image_embeds_list, dim=0)
+    # Optionally use an image projection if your model uses one.
     use_image_projection = False
     if use_image_projection:
         im_proj = model.image_projection(image_embeds.float())
         image_embeds = im_proj / im_proj.norm(dim=1, keepdim=True)
     else:
         image_embeds = image_embeds / image_embeds.norm(dim=1, keepdim=True)
-        
-    # --- Chunked computation of similarity matrix ---
+    # Move image embeddings to CPU.
+    image_embeds = image_embeds.cpu()
+
+    # Also bring logit scale (its exponential) to CPU.
+    logit_scale_val = logit_scale.exp().item()
+
+    # --- Compute similarity matrix in very small chunks on the CPU ---
     B = image_embeds.size(0)
     N = text_embeds.size(0)
-    chunk_size = 256  # Adjust this value based on available GPU memory
+    # Lower chunk size to reduce instantaneous memory requirements.
+    chunk_size = 128  
     sims_list = []
     for i in range(0, N, chunk_size):
         text_chunk = text_embeds[i:min(i+chunk_size, N)]
-        # Each chunk: (B, chunk_size)
-        sims_chunk = logit_scale.exp() * (image_embeds @ text_chunk.t())
+        # Compute similarity on CPU without occupying additional GPU memory.
+        sims_chunk = logit_scale_val * (image_embeds @ text_chunk.t())
         sims_list.append(sims_chunk)
     sims_matrix = torch.cat(sims_list, dim=1)  # Final shape: (B, N)
 
-    # Compute image-to-text scores using top-k selection
-    score_matrix_i2t = torch.full((B, N), -100.0).to(device)
+    # Build image-to-text score matrix: for each image, record the top-k similarity scores.
+    score_matrix_i2t = torch.full((B, N), -100.0)
+    k = 128
     for i, sims in enumerate(sims_matrix):
-        topk_sim, topk_idx = sims.topk(k=128, dim=0)
+        topk_sim, topk_idx = sims.topk(k=k, dim=0)
         score_matrix_i2t[i, topk_idx] = topk_sim 
 
-    # For text-to-image retrieval, transpose the similarity matrix and compute top-k again
-    sims_matrix = sims_matrix.t()  # shape now: (N, B)
-    score_matrix_t2i = torch.full((N, B), -100.0).to(device)
-    for i, sims in enumerate(sims_matrix):
-        topk_sim, topk_idx = sims.topk(k=128, dim=0)
+    # For text-to-image retrieval, use the transpose of the similarity matrix.
+    sims_matrix_t = sims_matrix.t()  # shape: (N, B)
+    score_matrix_t2i = torch.full((N, B), -100.0)
+    for i, sims in enumerate(sims_matrix_t):
+        topk_sim, topk_idx = sims.topk(k=k, dim=0)
         score_matrix_t2i[i, topk_idx] = topk_sim
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Evaluation time {}'.format(total_time_str)) 
 
-    return score_matrix_i2t.cpu().numpy(), score_matrix_t2i.cpu().numpy()
+    return score_matrix_i2t.numpy(), score_matrix_t2i.numpy()
 
 
 @torch.no_grad()
@@ -153,12 +160,12 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
     Returns:
         Dictionary containing retrieval metrics.
     """
-    # Image-to-Text Evaluation
+    # --- Image-to-Text Retrieval ---
     ranks = np.zeros(scores_i2t.shape[0])
     print("TR: ", len(ranks))
     for index, score in enumerate(scores_i2t):
         inds = np.argsort(score)[::-1]
-        rank = 1e20  # large initial value
+        rank = 1e20  # set to a very large value
         for i in img2txt[index]:
             tmp = np.where(inds == i)[0][0]
             if tmp < rank:
@@ -169,7 +176,7 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
     tr5 = 100.0 * len(np.where(ranks < 5)[0]) / len(ranks)
     tr10 = 100.0 * len(np.where(ranks < 10)[0]) / len(ranks)
   
-    # Text-to-Image Evaluation
+    # --- Text-to-Image Retrieval ---
     ranks = np.zeros(scores_t2i.shape[0])
     print("IR: ", len(ranks))
     for index, score in enumerate(scores_t2i):
