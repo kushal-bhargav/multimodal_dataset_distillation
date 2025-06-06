@@ -76,7 +76,8 @@ def epoch_test(dataloader, model, device, bert_test_embed):
     print("DEBUG: Starting computation of text embeddings on GPU...")
     txt_embed = model.text_projection(bert_test_embed.float().to(device))
     text_embeds = txt_embed / txt_embed.norm(dim=1, keepdim=True)
-    print("DEBUG: Text embeddings computed. Moving text embeddings to CPU...")
+    print("DEBUG: Text embeddings computed. Shape:", text_embeds.shape)
+    print("DEBUG: Moving text embeddings to CPU...")
     text_embeds = text_embeds.cpu()
     torch.cuda.empty_cache()
     gc.collect()
@@ -91,7 +92,7 @@ def epoch_test(dataloader, model, device, bert_test_embed):
         image_embeds_list.append(im_embed)
     image_embeds = torch.cat(image_embeds_list, dim=0)
     print(f"DEBUG: Finished extracting image embeddings. Total images: {image_embeds.size(0)}")
-    # Optionally use image projection if your model supports it.
+    # Optionally use an image projection if your model supports it.
     use_image_projection = False
     if use_image_projection:
         print("DEBUG: Applying image projection...")
@@ -113,24 +114,26 @@ def epoch_test(dataloader, model, device, bert_test_embed):
     print("DEBUG: Starting similarity matrix computation on CPU...")
     B = image_embeds.size(0)
     N = text_embeds.size(0)
-    chunk_size = 32  # Further reduced chunk size
+    chunk_size = 32  # You may lower this to 16 if needed
     sims_list = []
     for i in range(0, N, chunk_size):
         try:
             text_chunk = text_embeds[i:min(i + chunk_size, N)]
+            print(f"DEBUG: Processing chunk: shape {text_chunk.shape} for indices {i} to {min(i+chunk_size, N)}")
             sims_chunk = logit_scale_val * (image_embeds @ text_chunk.t())
             sims_list.append(sims_chunk)
             print(f"DEBUG: Processed text embeddings chunk from index {i} to {min(i + chunk_size, N)}")
+            print("DEBUG: Current memory status:", torch.cuda.memory_summary(device=device, abbreviated=True) if device.lower().startswith("cuda") else "Running on CPU")
             gc.collect()
         except Exception as e:
             print(f"ERROR: Processing text chunk starting at index {i} failed: {e}")
             raise
     sims_matrix = torch.cat(sims_list, dim=1)  # Final shape: (B, N)
-    print("DEBUG: Completed similarity matrix computation.")
+    print("DEBUG: Completed similarity matrix computation. Shape of similarity matrix:", sims_matrix.shape)
 
     # Optionally log GPU memory usage if using CUDA
     if device.lower().startswith("cuda"):
-        print("DEBUG: GPU Memory Summary:")
+        print("DEBUG: GPU Memory Summary after similarity computation:")
         print(torch.cuda.memory_summary(device=device, abbreviated=True))
 
     # --- Build retrieval score matrices ---
@@ -168,7 +171,7 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
     print(f"DEBUG: Number of image queries (TR): {len(ranks)}")
     for index, score in enumerate(scores_i2t):
         inds = np.argsort(score)[::-1]
-        rank = 1e20  # start with a very large value
+        rank = 1e20  # Start with a very large value
         for i in img2txt[index]:
             tmp = np.where(inds == i)[0][0]
             if tmp < rank:
@@ -211,7 +214,7 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
 
 def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, bert_test_embed, return_loss=False):
     """
-    Additional evaluation function to assess performance on a training subset ("synset").
+    Additional evaluation function for a training subset ("synset").
     """
     print("DEBUG: Starting evaluate_synset()...")
     net = net.to(args.device)
