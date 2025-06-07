@@ -49,7 +49,7 @@ def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
 
 
 @torch.no_grad()
-def epoch_test_metrics(dataloader, model, device, text_embed_input):
+def epoch_test(dataloader, model, device, text_embed_input):
     """
     Compute retrieval metrics in a streaming manner without preallocating 
     a huge similarity matrix.
@@ -64,7 +64,7 @@ def epoch_test_metrics(dataloader, model, device, text_embed_input):
       
     Returns a dictionary of retrieval metrics.
     """
-    print("DEBUG: Starting epoch_test_metrics evaluation...")
+    print("DEBUG: Starting epoch_test evaluation...")
     model.eval()
     # BLIP-style logit scale.
     logit_scale = nn.Parameter(torch.ones([]) * np.log(1/0.07))
@@ -125,7 +125,7 @@ def epoch_test_metrics(dataloader, model, device, text_embed_input):
         sorted_idx = np.argsort(sim_row)[::-1]
         gt = dataloader.dataset.img2txt[i]  # list of correct text indices for image i
         img_ranks[i] = int(np.min(np.where(np.isin(sorted_idx, gt))[0]))
-        if i % 1000 == 0:
+        if i % 2 == 0:
             print(f"DEBUG: Processed image {i}/{B}, current avg rank (img->txt): {img_ranks[:i+1].mean():.2f}")
     tr1 = 100.0 * np.sum(img_ranks < 1) / B
     tr5 = 100.0 * np.sum(img_ranks < 5) / B
@@ -189,7 +189,7 @@ def epoch_test_metrics(dataloader, model, device, text_embed_input):
         'r_mean': (tr1+tr5+tr10+ir1+ir5+ir10)/6
     }
     elapsed = time.time() - start_time
-    print("DEBUG: epoch_test_metrics completed in", str(datetime.timedelta(seconds=int(elapsed))))
+    print("DEBUG: epoch_test completed in", str(datetime.timedelta(seconds=int(elapsed))))
     return res
 
 
@@ -259,8 +259,8 @@ def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, 
         accs.append(a)
         print(f"DEBUG: Synset train epoch {ep} → Loss={l:.4f}, Acc={a:.4f}")
         if ep == Epoch:
-            print("DEBUG: Starting final synset evaluation with epoch_test_metrics()...")
-            res = epoch_test_metrics(testloader, net, args.device, text_embed_input)
+            print("DEBUG: Starting final synset evaluation with epoch_test()...")
+            res = epoch_test(testloader, net, args.device, text_embed_input)
             print("DEBUG: Synset evaluation result:", res)
     t1 = time.time() - t0
     print("DEBUG: evaluate_synset total time:", str(datetime.timedelta(seconds=int(t1))))
