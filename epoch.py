@@ -8,14 +8,13 @@ import time
 import datetime
 import torch.nn as nn
 from tqdm import tqdm
-from utils import MetricLogger          # your existing helper
+from utils import MetricLogger  # your existing helper, if any
 from torch.utils.data import TensorDataset
 import gc
 
 def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
     """
     Perform a training epoch on the given dataloader.
-    (Unchanged from your original code.)
     """
     print(f"DEBUG: Starting training epoch {e}...")
     net = net.to(args.device)
@@ -49,105 +48,108 @@ def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
 
 
 @torch.no_grad()
-def epoch_test(dataloader, model, device, text_embed_path):
+def epoch_test(dataloader, model, device, text_embed_input):
     """
-    Evaluate retrieval by streaming text embeddings via NumPy memmap
-    and using the original (GPU‐based) image embedding pipeline.
+    Evaluate the model on the retrieval task.
+    Computes the similarity matrix in very small chunks on the CPU.
+    
+    The argument 'text_embed_input' can be either:
+      - a string representing a file path (to a saved NPZ file with key "bert_test_embed")
+      - or a torch.Tensor containing the text embeddings.
     """
-
     print("DEBUG: Starting epoch_test evaluation...")
     model.eval()
-    # BLIP‐style logit scale
+    # BLIP-style logit scale
     logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
     logit_scale_val = logit_scale.exp().item()
     print(f"DEBUG: logit_scale = {logit_scale_val:.4f}")
 
     start_time = time.time()
 
-    # ----- 1) STREAM-IN TEXT EMBEDDINGS VIA MEMMAP -----
-    print(f"DEBUG: Loading text embeddings memmap from {text_embed_path}")
-    data = np.load(text_embed_path, mmap_mode="r")
-    bert_np = data["bert_test_embed"]       # shape (N, D)
-    N, D = bert_np.shape
-    print(f"DEBUG: bert_np memmap shape = ({N}, {D})")
+    # ---- Process text embeddings ----
+    if isinstance(text_embed_input, str):
+        # Load from file using memmap
+        print(f"DEBUG: Loading text embeddings memmap from {text_embed_input}")
+        data = np.load(text_embed_input, mmap_mode="r")
+        bert_np = data["bert_test_embed"]  # shape: (N, D)
+    elif isinstance(text_embed_input, torch.Tensor):
+        print("DEBUG: Received text embeddings as a Tensor; moving to CPU and converting to numpy.")
+        bert_np = text_embed_input.cpu().numpy()
+    else:
+        raise ValueError("text_embed_input must be either a file path (str) or a torch.Tensor")
 
-    # ----- 2) ORIGINAL IMAGE EMBEDDING PIPELINE (GPU) -----
+    N, D = bert_np.shape
+    print(f"DEBUG: Loaded text embeddings shape: ({N}, {D})")
+
+    # ---- Image embeddings (as before) ----
     print("DEBUG: Extracting image embeddings on GPU...")
-    image_embeds_gpu = []
+    image_embeds_list = []
     for image, img_id in tqdm(dataloader, desc="Extracting image embeddings"):
         feat = model.image_encoder(image.to(device))
         normalized = feat / feat.norm(dim=1, keepdim=True)
-        image_embeds_gpu.append(normalized)
-    image_embeds_gpu = torch.cat(image_embeds_gpu, dim=0)  # shape (B, D)
-    print(f"DEBUG: image_embeds_gpu shape = {tuple(image_embeds_gpu.shape)}")
-
-    # If your model has a separate image_projection, apply it:
+        image_embeds_list.append(normalized)
+    image_embeds = torch.cat(image_embeds_list, dim=0)  # shape (B, D)
+    print(f"DEBUG: image_embeds.shape = {tuple(image_embeds.shape)}")
     if hasattr(model, "image_projection"):
         print("DEBUG: Applying image_projection...")
-        proj = model.image_projection(image_embeds_gpu)
-        image_embeds_gpu = proj / proj.norm(dim=1, keepdim=True)
+        proj = model.image_projection(image_embeds)
+        image_embeds = proj / proj.norm(dim=1, keepdim=True)
+    image_embeds = image_embeds.cpu()
+    torch.cuda.empty_cache()
+    gc.collect()
+    print("DEBUG: Image embeddings moved to CPU.")
 
-    # ----- 3) PREALLOCATE CPU-SIDE SCORE MATRICES -----
-    B = image_embeds_gpu.size(0)
-    print(f"DEBUG: Pre‐allocating score arrays: i2t({B},{N}), t2i({N},{B})")
+    # ---- Preallocate score matrices on CPU ----
+    B = image_embeds.size(0)
+    print(f"DEBUG: Preallocating score matrices: image-to-text ({B}, {N}) and text-to-image ({N}, {B})")
     score_i2t = np.full((B, N), -100.0, dtype=np.float32)
     score_t2i = np.full((N, B), -100.0, dtype=np.float32)
 
-    # ----- 4) CHUNKED SIMILARITY COMPUTATION -----
-    chunk_size = 32   # adjust lower if still OOM
+    # ---- Process text embeddings in chunks ----
+    chunk_size = 32  # adjust if necessary
     total_chunks = (N + chunk_size - 1) // chunk_size
-    print(f"DEBUG: Will process {total_chunks} text chunks (size {chunk_size})")
-
+    print(f"DEBUG: Will process {total_chunks} text chunks (chunk size: {chunk_size}).")
     for chunk_idx, start in enumerate(range(0, N, chunk_size), start=1):
         end = min(start + chunk_size, N)
-        print(f"DEBUG: Processing text chunk {chunk_idx}/{total_chunks}: indices [{start}:{end}]")
-
-        # 4a) load that slice from memmap, move to GPU
-        bert_chunk = torch.from_numpy(bert_np[start:end]).float().to(device)  # shape (c, D)
-
-        # 4b) project & normalize
-        txt_proj = model.text_projection(bert_chunk)
-        txt_proj = txt_proj / txt_proj.norm(dim=1, keepdim=True)            # (c, D)
-        del bert_chunk
+        print(f"DEBUG: Processing chunk {chunk_idx}/{total_chunks}: indices [{start}:{end}]")
+        # Load the current chunk's text embeddings and move to GPU for projection.
+        text_chunk = torch.from_numpy(bert_np[start:end]).float().to(device)  # (c, D)
+        txt_proj = model.text_projection(text_chunk)      # (c, D)
+        txt_proj = txt_proj / txt_proj.norm(dim=1, keepdim=True)
+        del text_chunk
         torch.cuda.empty_cache()
-
-        # 4c) compute similarity on GPU, bring to CPU
-        sims_gpu = logit_scale_val * (image_embeds_gpu @ txt_proj.t())       # (B, c)
-        sims_chunk = sims_gpu.cpu().numpy()                                 # (B, c)
+        # Similarity: (B, D) @ (D, c) → (B, c)
+        sims_gpu = logit_scale_val * (image_embeds @ txt_proj.t())
+        sims_chunk = sims_gpu.cpu().numpy()  # (B, c)
         del sims_gpu, txt_proj
-        torch.cuda.empty_cache()
+        torch.cuda.empty_cache(); gc.collect()
 
-        # 4d) fill image→text
         score_i2t[:, start:end] = sims_chunk
-
-        # 4e) fill text→image (top-k)
+        # For text->image: for each text in the chunk, get top k indices.
         k = 128
         for j in range(end - start):
             col = sims_chunk[:, j]
             topk_idx = np.argpartition(-col, k - 1)[:k]
             score_t2i[start + j, topk_idx] = col[topk_idx]
-
-        # 4f) debug memory
-        if device.startswith("cuda"):
-            alloc = torch.cuda.memory_allocated(device) / (1024 ** 2)
-            resv  = torch.cuda.memory_reserved(device)  / (1024 ** 2)
-            print(f"DEBUG: After chunk {chunk_idx}: GPU alloc={alloc:.1f}MB, reserved={resv:.1f}MB")
+        if device.lower().startswith("cuda"):
+            allocated = torch.cuda.memory_allocated(device) / 1e6
+            reserved  = torch.cuda.memory_reserved(device) / 1e6
+            print(f"DEBUG: After chunk {chunk_idx}: GPU allocated={allocated:.1f} MB, reserved={reserved:.1f} MB")
         gc.collect()
 
-    # ----- 5) FINISH -----
     elapsed = time.time() - start_time
-    print("DEBUG: epoch_test completed in", str(datetime.timedelta(seconds=int(elapsed))))
+    total_time_str = str(datetime.timedelta(seconds=int(elapsed)))
+    print("DEBUG: epoch_test completed in", total_time_str)
     return score_i2t, score_t2i
 
 
 @torch.no_grad()
 def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
     """
-    Compute retrieval metrics from CPU numpy arrays.
-    (Unchanged from your original code.)
+    Evaluate image-text matching. Computes retrieval metrics.
     """
     print("DEBUG: Starting itm_eval...")
-    # Image→Text
+    # Image->Text
     ranks = np.zeros(scores_i2t.shape[0], dtype=np.int32)
     for i, row in enumerate(scores_i2t):
         inds = np.argsort(row)[::-1]
@@ -155,30 +157,29 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
         ranks[i] = best
     tr1 = 100.0 * (ranks < 1).sum() / len(ranks)
     tr5 = 100.0 * (ranks < 5).sum() / len(ranks)
-    tr10= 100.0 * (ranks < 10).sum()/ len(ranks)
+    tr10 = 100.0 * (ranks < 10).sum() / len(ranks)
 
-    # Text→Image
+    # Text->Image
     ranks = np.zeros(scores_t2i.shape[0], dtype=np.int32)
     for i, row in enumerate(scores_t2i):
         inds = np.argsort(row)[::-1]
         ranks[i] = np.where(inds == txt2img[i])[0][0]
     ir1 = 100.0 * (ranks < 1).sum() / len(ranks)
     ir5 = 100.0 * (ranks < 5).sum() / len(ranks)
-    ir10= 100.0 * (ranks < 10).sum()/ len(ranks)
+    ir10 = 100.0 * (ranks < 10).sum() / len(ranks)
 
-    results = {
+    result = {
         'txt_r1': tr1, 'txt_r5': tr5, 'txt_r10': tr10, 'txt_r_mean': (tr1+tr5+tr10)/3,
         'img_r1': ir1, 'img_r5': ir5, 'img_r10': ir10, 'img_r_mean': (ir1+ir5+ir10)/3,
         'r_mean': (tr1+tr5+tr10+ir1+ir5+ir10)/6
     }
-    print("DEBUG: itm_eval results:", results)
-    return results
+    print("DEBUG: itm_eval results:", result)
+    return result
 
 
-def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, bert_test_embed, return_loss=False):
+def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, text_embed_input, return_loss=False):
     """
-    Synset evaluation combining epoch_test + itm_eval.
-    (Unchanged from your original code.)
+    Additional evaluation function for a training subset (synset).
     """
     print("DEBUG: Starting evaluate_synset()...")
     net = net.to(args.device)
@@ -197,12 +198,14 @@ def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, 
     t0 = time.time()
     for ep in range(Epoch + 1):
         l, a = epoch(ep, loader, net, opt_img, opt_txt, args)
-        losses.append(l); accs.append(a)
-        print(f"DEBUG: Synset train epoch {ep}: Loss={l:.4f}, Acc={a:.4f}")
+        losses.append(l)
+        accs.append(a)
+        print(f"DEBUG: Synset train epoch {ep} → loss {l:.4f}, acc {a:.4f}")
         if ep == Epoch:
-            print("DEBUG: Final synset evaluation...")
-            i2t, t2i = epoch_test(testloader, net, args.device, bert_test_embed)
-            res    = itm_eval(i2t, t2i, testloader.dataset.txt2img, testloader.dataset.img2txt)
+            print("DEBUG: Final synset evaluation with epoch_test()...")
+            i2t, t2i = epoch_test(testloader, net, args.device, text_embed_input)
+            res = itm_eval(i2t, t2i, testloader.dataset.txt2img, testloader.dataset.img2txt)
+            print("DEBUG: Synset evaluation result:", res)
     t1 = time.time() - t0
     print("DEBUG: evaluate_synset total time:", str(datetime.timedelta(seconds=int(t1))))
     return net, accs, res
