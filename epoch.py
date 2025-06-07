@@ -49,7 +49,7 @@ def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
 
 
 @torch.no_grad()
-def epoch_test_metrics(dataloader, model, device, text_embed_input):
+def epoch_test(dataloader, model, device, text_embed_input):
     """
     Evaluate retrieval metrics in a streaming manner—processing one image row (and later one text query)
     at a time, so that we do not allocate a huge full similarity matrix.
