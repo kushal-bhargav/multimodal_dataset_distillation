@@ -1,5 +1,5 @@
 import os
-# Enable expandable segments for more flexible GPU memory management
+# Enable expandable segments for flexible GPU memory management.
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import numpy as np
@@ -14,7 +14,6 @@ import gc
 def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
     """
     Perform a training epoch on the given dataloader.
-    (Unmodified.)
     """
     print(f"DEBUG: Starting training epoch {e}...")
     net = net.to(args.device)
@@ -50,99 +49,119 @@ def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
 @torch.no_grad()
 def epoch_test(dataloader, model, device, text_embed_input):
     """
-    Evaluate retrieval metrics in a streaming manner without pre-allocating a huge similarity matrix.
+    Compute retrieval metrics in a streaming manner without preallocating a huge score matrix.
     
     The argument 'text_embed_input' can be:
-       - a string: a path to an NPZ file containing the key "bert_test_embed", or
-       - a torch.Tensor containing the text embeddings.
+      - a file path (string) to a saved NPZ file with key "bert_test_embed", or
+      - a torch.Tensor containing the text embeddings.
+      
+    For ranking, we process one image and one text at a time so that all projections 
+    are computed on the fly, ensuring that image and text embeddings share the same dimension.
     
-    The test dataset (accessed via dataloader.dataset) must have:
-       - 'img2txt': a list of correct text index lists for each image.
-       - 'txt2img': a list/array with one correct image index per text.
-    
-    Returns:
-       A dictionary of retrieval metrics.
+    The test dataset (accessed via dataloader.dataset) must provide:
+      - 'img2txt': for each image, a list of matching text indices.
+      - 'txt2img': for each text, the ground-truth image index.
+      
+    Returns a dictionary of retrieval metrics.
     """
     print("DEBUG: Starting epoch_test_metrics evaluation...")
     model.eval()
     # BLIP-style logit scale
-    logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+    logit_scale = nn.Parameter(torch.ones([]) * np.log(1/0.07))
     logit_scale_val = logit_scale.exp().item()
     print(f"DEBUG: logit_scale = {logit_scale_val:.4f}")
     start_time = time.time()
-
-    # --- Process Text Embeddings ---
+    
+    # --- Load text embeddings ---
     if isinstance(text_embed_input, str):
         print(f"DEBUG: Loading text embeddings memmap from {text_embed_input}")
         data = np.load(text_embed_input, mmap_mode="r")
-        bert_np = data["bert_test_embed"]  # shape (N, D)
+        bert_np = data["bert_test_embed"]  # shape: (N, d0)
     elif isinstance(text_embed_input, torch.Tensor):
         print("DEBUG: Received text embeddings as a Tensor; converting to numpy.")
         bert_np = text_embed_input.cpu().numpy()
     else:
-        raise ValueError("text_embed_input must be a file path or a torch.Tensor")
-    N, D = bert_np.shape
-    print(f"DEBUG: Loaded text embeddings: shape=({N},{D})")
-    # Keep text embeddings on CPU
-    text_embeds = torch.from_numpy(bert_np).float()  # shape: (N, D)
-
-    # --- Extract Image Embeddings ---
+        raise ValueError("text_embed_input must be a file path (str) or a torch.Tensor")
+    N, d0 = bert_np.shape
+    print(f"DEBUG: Loaded text embeddings: shape=({N},{d0})")
+    
+    # We'll compute the projected text embedding on the fly per chunk.
+    
+    # --- Extract image embeddings (unchanged) ---
     print("DEBUG: Extracting image embeddings on GPU...")
     image_embeds_list = []
     for image, img_id in tqdm(dataloader, desc="Extracting image embeddings"):
         feat = model.image_encoder(image.to(device))
         normed = feat / feat.norm(dim=1, keepdim=True)
         image_embeds_list.append(normed.cpu())
-    image_embeds = torch.cat(image_embeds_list, dim=0)  # shape: (B, D_im)
-    B, D_im = image_embeds.shape
-    print(f"DEBUG: Extracted image embeddings: shape=({B},{D_im})")
+    image_embeds = torch.cat(image_embeds_list, dim=0)  # shape: (B, D_image)
+    B, D_image = image_embeds.shape
+    print(f"DEBUG: Extracted image embeddings: shape=({B},{D_image})")
     if hasattr(model, "image_projection"):
         print("DEBUG: Applying image_projection...")
         proj = model.image_projection(image_embeds)
         image_embeds = proj / proj.norm(dim=1, keepdim=True)
     image_embeds = image_embeds.cpu()
     torch.cuda.empty_cache(); gc.collect()
-    print("DEBUG: Image embeddings moved to CPU.")
-
-    # --- Compute Image-to-Text Retrieval Metrics Streaming ---
-    print("DEBUG: Computing image-to-text retrieval metrics...")
+    print("DEBUG: Image embeddings are on CPU.")
+    
+    # --- Compute image-to-text retrieval metrics ---
+    print("DEBUG: Computing image-to-text retrieval metrics (streaming per image)...")
     img_ranks = np.empty(B, dtype=np.int32)
+    # Choose a chunk size for text projection for each image; 256 is a reasonable size.
+    chunk_size = 256  
     for i in range(B):
-        sim_row = logit_scale_val * (image_embeds[i].unsqueeze(0) @ text_embeds.t())
-        sim_row = sim_row.squeeze(0).numpy()  # shape: (N,)
+        sim_row = np.empty(N, dtype=np.float32)
+        for start_idx in range(0, N, chunk_size):
+            end_idx = min(start_idx + chunk_size, N)
+            # Load a chunk of raw text embeddings and project them
+            text_chunk = torch.from_numpy(bert_np[start_idx:end_idx]).float().to(device)  # shape: (c, d0)
+            txt_proj = model.text_projection(text_chunk)   # shape: (c, D_proj)
+            txt_proj = txt_proj / txt_proj.norm(dim=1, keepdim=True)
+            # Compute similarity: image_embeds[i] has shape (D_image,). We assume D_proj equals D_image.
+            chunk_sim = logit_scale_val * (image_embeds[i].unsqueeze(0).to(device) @ txt_proj.t())
+            sim_row[start_idx:end_idx] = chunk_sim.squeeze(0).cpu().numpy()
+            del text_chunk, txt_proj, chunk_sim
+            torch.cuda.empty_cache()
+            gc.collect()
         sorted_idx = np.argsort(sim_row)[::-1]
-        # ground truth list for image i (assumed available as dataloader.dataset.img2txt)
-        gt = dataloader.dataset.img2txt[i]
-        rank = int(np.min(np.where(np.isin(sorted_idx, gt))[0]))
-        img_ranks[i] = rank
+        gt = dataloader.dataset.img2txt[i]  # list of correct text indices for image i
+        img_ranks[i] = int(np.min(np.where(np.isin(sorted_idx, gt))[0]))
         if i % 1000 == 0:
             print(f"DEBUG: Processed image {i}/{B}, current avg rank (img->txt): {img_ranks[:i+1].mean():.2f}")
     tr1 = 100.0 * np.sum(img_ranks < 1) / B
     tr5 = 100.0 * np.sum(img_ranks < 5) / B
     tr10 = 100.0 * np.sum(img_ranks < 10) / B
     print("DEBUG: Image-to-text metrics computed.")
-
-    # --- Compute Text-to-Image Retrieval Metrics Streaming ---
-    print("DEBUG: Computing text-to-image retrieval metrics...")
+    
+    # --- Compute text-to-image retrieval metrics ---
+    print("DEBUG: Computing text-to-image retrieval metrics (streaming per text)...")
     txt_ranks = np.empty(N, dtype=np.int32)
     for j in range(N):
-        sim_col = logit_scale_val * (text_embeds[j].unsqueeze(0) @ image_embeds.t())
-        sim_col = sim_col.squeeze(0).numpy()  # shape: (B,)
-        sorted_idx = np.argsort(sim_col)[::-1]
-        gt = dataloader.dataset.txt2img[j]
-        rank = int(np.where(sorted_idx == gt)[0][0])
-        txt_ranks[j] = rank
+        # Process one text query: load raw text embedding, project it.
+        text_tensor = torch.from_numpy(bert_np[j:j+1]).float().to(device)
+        txt_proj = model.text_projection(text_tensor)
+        txt_proj = txt_proj / txt_proj.norm(dim=1, keepdim=True)
+        sim_vector = logit_scale_val * (txt_proj @ image_embeds.to(device).t())
+        sim_vector = sim_vector.squeeze(0).cpu().numpy()
+        sorted_idx = np.argsort(sim_vector)[::-1]
+        gt = dataloader.dataset.txt2img[j]  # ground truth image index for text j
+        txt_ranks[j] = int(np.where(sorted_idx == gt)[0][0])
         if j % 1000 == 0:
             print(f"DEBUG: Processed text {j}/{N}, current avg rank (txt->img): {txt_ranks[:j+1].mean():.2f}")
+        del text_tensor, txt_proj, sim_vector
+        torch.cuda.empty_cache()
+        gc.collect()
+    
     ir1 = 100.0 * np.sum(txt_ranks < 1) / N
     ir5 = 100.0 * np.sum(txt_ranks < 5) / N
     ir10 = 100.0 * np.sum(txt_ranks < 10) / N
     print("DEBUG: Text-to-image metrics computed.")
-
+    
     res = {
-        'txt_r1': tr1, 'txt_r5': tr5, 'txt_r10': tr10, 'txt_r_mean': (tr1 + tr5 + tr10) / 3,
-        'img_r1': ir1, 'img_r5': ir5, 'img_r10': ir10, 'img_r_mean': (ir1 + ir5 + ir10) / 3,
-        'r_mean': (tr1 + tr5 + tr10 + ir1 + ir5 + ir10) / 6
+        'txt_r1': tr1, 'txt_r5': tr5, 'txt_r10': tr10, 'txt_r_mean': (tr1+tr5+tr10)/3,
+        'img_r1': ir1, 'img_r5': ir5, 'img_r10': ir10, 'img_r_mean': (ir1+ir5+ir10)/3,
+        'r_mean': (tr1+tr5+tr10+ir1+ir5+ir10)/6
     }
     elapsed = time.time() - start_time
     print("DEBUG: epoch_test_metrics completed in", str(datetime.timedelta(seconds=int(elapsed))))
@@ -153,7 +172,7 @@ def epoch_test(dataloader, model, device, text_embed_input):
 def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
     """
     Evaluate image-text matching given full score matrices.
-    (This version is kept for compatibility, but you are now using the streaming version.)
+    (Kept for compatibility; not used in the streaming method.)
     """
     print("DEBUG: Starting itm_eval...")
     # Image->Text
@@ -165,7 +184,7 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
     tr1 = 100.0 * (ranks < 1).sum() / len(ranks)
     tr5 = 100.0 * (ranks < 5).sum() / len(ranks)
     tr10 = 100.0 * (ranks < 10).sum() / len(ranks)
-
+    
     # Text->Image
     ranks = np.zeros(scores_t2i.shape[0], dtype=np.int32)
     for i, row in enumerate(scores_t2i):
@@ -174,7 +193,7 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
     ir1 = 100.0 * (ranks < 1).sum() / len(ranks)
     ir5 = 100.0 * (ranks < 5).sum() / len(ranks)
     ir10 = 100.0 * (ranks < 10).sum() / len(ranks)
-
+    
     result = {
         'txt_r1': tr1, 'txt_r5': tr5, 'txt_r10': tr10, 'txt_r_mean': (tr1+tr5+tr10)/3,
         'img_r1': ir1, 'img_r5': ir5, 'img_r10': ir10, 'img_r_mean': (ir1+ir5+ir10)/3,
@@ -186,7 +205,7 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
 
 def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, text_embed_input, return_loss=False):
     """
-    Evaluate the synset by training on the subset and then computing retrieval metrics via streaming.
+    Evaluate the synset by training and then computing retrieval metrics via streaming.
     """
     print("DEBUG: Starting evaluate_synset()...")
     net = net.to(args.device)
