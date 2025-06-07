@@ -11,6 +11,8 @@ from tqdm import tqdm
 from torch.utils.data import TensorDataset
 import gc
 
+# Standard functions remain unchanged.
+
 def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
     """
     Perform a training epoch on the given dataloader.
@@ -52,9 +54,9 @@ def epoch_test_metrics(dataloader, model, device, text_embed_input):
     Compute retrieval metrics in a streaming manner without preallocating 
     a huge similarity matrix.
     
-    The argument 'text_embed_input' can be:
-      - a string representing a file path to an NPZ file containing key "bert_test_embed", or
-      - a torch.Tensor containing the text embeddings.
+    The argument 'text_embed_input' may be:
+      - A file path (string) to an NPZ file containing the key "bert_test_embed", or
+      - A torch.Tensor containing the text embeddings.
       
     The test dataset (accessed via dataloader.dataset) must provide:
       - 'img2txt': for each image, a list of matching text indices.
@@ -64,7 +66,7 @@ def epoch_test_metrics(dataloader, model, device, text_embed_input):
     """
     print("DEBUG: Starting epoch_test_metrics evaluation...")
     model.eval()
-    # BLIP-style logit scale
+    # BLIP-style logit scale.
     logit_scale = nn.Parameter(torch.ones([]) * np.log(1/0.07))
     logit_scale_val = logit_scale.exp().item()
     print(f"DEBUG: logit_scale = {logit_scale_val:.4f}")
@@ -82,9 +84,8 @@ def epoch_test_metrics(dataloader, model, device, text_embed_input):
         raise ValueError("text_embed_input must be a file path (str) or a torch.Tensor")
     N, D = bert_np.shape
     print(f"DEBUG: Loaded text embeddings: shape=({N},{D})")
-    # Keep text embeddings on CPU
-    text_embeds = torch.from_numpy(bert_np).float()  # shape: (N, D)
-    
+    # Keep text embeddings on CPU.
+    # (They will be processed in chunks later.)
     # --- Extract image embeddings (unchanged) ---
     print("DEBUG: Extracting image embeddings on GPU...")
     image_embeds_list = []
@@ -100,25 +101,22 @@ def epoch_test_metrics(dataloader, model, device, text_embed_input):
         proj = model.image_projection(image_embeds)
         image_embeds = proj / proj.norm(dim=1, keepdim=True)
     image_embeds = image_embeds.cpu()
-    torch.cuda.empty_cache()
-    gc.collect()
+    torch.cuda.empty_cache(); gc.collect()
     print("DEBUG: Image embeddings moved to CPU.")
     
     # --- Compute image-to-text retrieval metrics ---
     print("DEBUG: Computing image-to-text retrieval metrics (streaming per image)...")
     img_ranks = np.empty(B, dtype=np.int32)
-    # Increase chunk size for faster processing.
+    # Use a chunk size for faster processing (adjust as needed)
     chunk_size = 1024  
     for i in range(B):
-        # Create an empty row for similarity scores
         sim_row = np.empty(N, dtype=np.float32)
         for start_idx in range(0, N, chunk_size):
             end_idx = min(start_idx + chunk_size, N)
             # Process a chunk of raw text embeddings and project them.
-            text_chunk = torch.from_numpy(bert_np[start_idx:end_idx]).float().to(device)  # shape: (c, D)
-            txt_proj = model.text_projection(text_chunk)   # shape: (c, D_proj)
-            txt_proj = txt_proj / txt_proj.norm(dim=1, keepdim=True)  # normalized
-            # Compute similarity: image_embeds[i] (D_im,) dot each vector in txt_proj.
+            text_chunk = torch.from_numpy(bert_np[start_idx:end_idx]).float().to(device)
+            txt_proj = model.text_projection(text_chunk)
+            txt_proj = txt_proj / txt_proj.norm(dim=1, keepdim=True)
             chunk_sim = logit_scale_val * (image_embeds[i].unsqueeze(0).to(device) @ txt_proj.t())
             sim_row[start_idx:end_idx] = chunk_sim.squeeze(0).cpu().numpy()
             del text_chunk, txt_proj, chunk_sim
@@ -134,10 +132,14 @@ def epoch_test_metrics(dataloader, model, device, text_embed_input):
     tr10 = 100.0 * np.sum(img_ranks < 10) / B
     print("DEBUG: Image-to-text metrics computed.")
     
-    # --- Compute text-to-image retrieval metrics ---
-    print("DEBUG: Computing text-to-image retrieval metrics (streaming per text)...")
-    txt_ranks = np.empty(N, dtype=np.int32)
-    for j in range(N):
+    # --- Compute text-to-image retrieval metrics asynchronously ---
+    print("DEBUG: Computing text-to-image retrieval metrics (streaming per text using asynchronous chunks)...")
+    # Import nest_asyncio and asyncio.
+    import nest_asyncio, asyncio
+    nest_asyncio.apply()
+    
+    async def process_text(j):
+        """Process one text sample asynchronously."""
         text_tensor = torch.from_numpy(bert_np[j:j+1]).float().to(device)
         txt_proj = model.text_projection(text_tensor)
         txt_proj = txt_proj / txt_proj.norm(dim=1, keepdim=True)
@@ -145,12 +147,30 @@ def epoch_test_metrics(dataloader, model, device, text_embed_input):
         sim_vector = sim_vector.squeeze(0).cpu().numpy()  # shape: (B,)
         sorted_idx = np.argsort(sim_vector)[::-1]
         gt = dataloader.dataset.txt2img[j]
-        txt_ranks[j] = int(np.where(sorted_idx == gt)[0][0])
-        if j % 1000 == 0:
-            print(f"DEBUG: Processed text {j}/{N}, current avg rank (txt->img): {txt_ranks[:j+1].mean():.2f}")
+        rank = int(np.where(sorted_idx == gt)[0][0])
         del text_tensor, txt_proj, sim_vector
         torch.cuda.empty_cache()
         gc.collect()
+        return j, rank
+
+    # We will run tasks in batches to avoid creating 65k tasks at once.
+    txt_ranks = np.empty(N, dtype=np.int32)
+    async_batch_size = 1000
+    async_tasks = []
+    loop = asyncio.get_event_loop()
+    for j in range(N):
+        async_tasks.append(process_text(j))
+        if len(async_tasks) >= async_batch_size:
+            results = loop.run_until_complete(asyncio.gather(*async_tasks))
+            for r in results:
+                txt_ranks[r[0]] = r[1]
+            async_tasks = []
+            print(f"DEBUG: Processed text {j}/{N}, current avg rank (txt->img): {txt_ranks[:j+1].mean():.2f}")
+    if async_tasks:
+        results = loop.run_until_complete(asyncio.gather(*async_tasks))
+        for r in results:
+            txt_ranks[r[0]] = r[1]
+        print(f"DEBUG: Processed text {N}/{N}, current avg rank (txt->img): {txt_ranks.mean():.2f}")
     
     ir1 = 100.0 * np.sum(txt_ranks < 1) / N
     ir5 = 100.0 * np.sum(txt_ranks < 5) / N
@@ -161,14 +181,13 @@ def epoch_test_metrics(dataloader, model, device, text_embed_input):
         'txt_r1': tr1, 
         'txt_r5': tr5, 
         'txt_r10': tr10, 
-        'txt_r_mean': (tr1 + tr5 + tr10) / 3,
+        'txt_r_mean': (tr1+tr5+tr10)/3,
         'img_r1': ir1, 
         'img_r5': ir5, 
         'img_r10': ir10, 
-        'img_r_mean': (ir1 + ir5 + ir10) / 3,
-        'r_mean': (tr1 + tr5 + tr10 + ir1 + ir5 + ir10) / 6
+        'img_r_mean': (ir1+ir5+ir10)/3,
+        'r_mean': (tr1+tr5+tr10+ir1+ir5+ir10)/6
     }
-    
     elapsed = time.time() - start_time
     print("DEBUG: epoch_test_metrics completed in", str(datetime.timedelta(seconds=int(elapsed))))
     return res
@@ -178,7 +197,7 @@ def epoch_test_metrics(dataloader, model, device, text_embed_input):
 def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
     """
     Evaluate image-text matching given full score matrices.
-    (Retained for compatibility; not used in streaming method.)
+    (Retained for compatibility; not used in the asynchronous streaming version.)
     """
     print("DEBUG: Starting itm_eval...")
     # Image→Text
@@ -204,12 +223,12 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
         'txt_r1': tr1, 
         'txt_r5': tr5, 
         'txt_r10': tr10, 
-        'txt_r_mean': (tr1 + tr5 + tr10) / 3,
+        'txt_r_mean': (tr1+tr5+tr10)/3,
         'img_r1': ir1, 
         'img_r5': ir5, 
         'img_r10': ir10, 
-        'img_r_mean': (ir1 + ir5 + ir10) / 3,
-        'r_mean': (tr1 + tr5 + tr10 + ir1 + ir5 + ir10) / 6
+        'img_r_mean': (ir1+ir5+ir10)/3,
+        'r_mean': (tr1+tr5+tr10+ir1+ir5+ir10)/6
     }
     print("DEBUG: itm_eval results:", result)
     return result
