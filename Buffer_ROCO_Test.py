@@ -169,7 +169,6 @@ def main(args):
         import wandb
         wandb.init(project='DatasetDistillation', entity='dataset_distillation', config=args, name=args.name)
    
-    
     args.dsa = True if args.dsa == 'True' else False
     args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
     args.distributed = torch.cuda.device_count() > 1
@@ -237,6 +236,9 @@ def main(args):
             train_loss, train_acc = epoch(e, trainloader, teacher_net, teacher_optim_img, teacher_optim_txt, args)
             # Modified unpacking to ignore extra returned values.
             score_val_i2t, score_val_t2i, *rest = epoch_test(testloader, teacher_net, args.device, bert_test_embed)
+            # Ensure numerical arrays are used.
+            score_val_i2t = np.array(score_val_i2t)
+            score_val_t2i = np.array(score_val_t2i)
             val_result = itm_eval(score_val_i2t, score_val_t2i, testloader.dataset.txt2img, testloader.dataset.img2txt)
 
             wandb.log({"train_loss": train_loss})
