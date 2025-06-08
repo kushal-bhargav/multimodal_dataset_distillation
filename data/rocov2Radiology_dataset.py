@@ -75,7 +75,7 @@ class roco_train(Dataset):
         return [self.prompt + pre_caption(cap, self.max_words) for cap in self.df['caption']]
 
 class roco_retrieval_eval(Dataset):
-    def __init__(self, transform, image_root, ann_file, split, max_words=30, max_images=1000):
+    def __init__(self, transform, image_root, ann_file, split, max_words=30, max_images=100):
         """
         Args:
             transform (callable): Image transformations.
