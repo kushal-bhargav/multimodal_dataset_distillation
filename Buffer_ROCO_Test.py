@@ -157,9 +157,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 def main(args):
     # Initialize wandb
-    # wandb.init(project='DatasetDistillation', entity='dataset_distillation', config=args, name=args.name)
     if args.disable_wandb:
-        # Force WandB into disabled mode
         import os
         os.environ["WANDB_MODE"] = "disabled"
         import wandb
@@ -175,7 +173,6 @@ def main(args):
 
     print('Hyper-parameters: \n', args.__dict__)
 
-    # Create directory for saving replay buffers; output under /kaggle/working by default.
     save_dir = os.path.join(args.buffer_path, args.dataset)
     if args.dataset in ["CIFAR10", "CIFAR100"] and not args.zca:
         save_dir += "_NO_ZCA"
@@ -188,10 +185,8 @@ def main(args):
         trainloader, testloader, train_dataset, test_dataset = get_dataset_flickr(args)
         data = load_or_process_file('text', textprocess, args, testloader)
     elif args.dataset == 'roco':
-        # Call the ROCO branch of dataset creation.
         trainloader, testloader, train_dataset, test_dataset = get_dataset_flickr(args)
         data = load_or_process_file('text', textprocess, args, testloader)
-        # (If you implement ROCO text processing, replace textprocess above with textprocess_roco)
     elif args.dataset == 'coco':
         trainloader, testloader, train_dataset, test_dataset = get_dataset_flickr(args)
         data = load_or_process_file('text', textprocess, args, testloader)
@@ -236,9 +231,13 @@ def main(args):
             train_loss, train_acc = epoch(e, trainloader, teacher_net, teacher_optim_img, teacher_optim_txt, args)
             # Modified unpacking to ignore extra returned values.
             score_val_i2t, score_val_t2i, *rest = epoch_test(testloader, teacher_net, args.device, bert_test_embed)
-            # Ensure numerical arrays are used.
-            score_val_i2t = np.array(score_val_i2t)
-            score_val_t2i = np.array(score_val_t2i)
+            # Ensure the outputs are numpy arrays with at least one dimension.
+            score_val_i2t = np.asarray(score_val_i2t)
+            score_val_t2i = np.asarray(score_val_t2i)
+            if score_val_i2t.ndim == 0:
+                score_val_i2t = np.expand_dims(score_val_i2t, axis=0)
+            if score_val_t2i.ndim == 0:
+                score_val_t2i = np.expand_dims(score_val_t2i, axis=0)
             val_result = itm_eval(score_val_i2t, score_val_t2i, testloader.dataset.txt2img, testloader.dataset.img2txt)
 
             wandb.log({"train_loss": train_loss})
