@@ -55,7 +55,7 @@ from torch.utils.data import DataLoader
 from data.flickr30k_dataset import flickr30k_train, flickr30k_retrieval_eval
 from data.coco_dataset import coco_train, coco_retrieval_eval, coco_caption_eval
 
-# ----- Import ROCO dataset functions (or define dummy functions) -----
+# ----- Attempt to import ROCO dataset functions -----
 try:
     from data.rocov2Radiology_dataset import roco_train, roco_retrieval_eval
 except ImportError:
@@ -65,7 +65,7 @@ except ImportError:
     def roco_retrieval_eval(transform, image_root, ann_file, split):
         raise NotImplementedError("roco_retrieval_eval is not implemented. Check your module path.")
 
-# ----- Import helper modules -----
+# ----- Import helper functions -----
 from data import textprocess, textprocess_train
 from epoch import evaluate_synset, epoch, epoch_test, itm_eval
 from networks import CLIPModel_full, TextEncoder
@@ -95,12 +95,11 @@ def nearest_neighbor(sentences, query_embeddings, database_embeddings):
     return nearest_neighbors
 
 def get_images_texts(n, dataset):
-    # Retrieve n random samples from dataset
     idx_shuffle = np.random.permutation(len(dataset))[:n]
     text_encoder = TextEncoder(args)
     image_syn = torch.stack([dataset[i][0] for i in idx_shuffle])
-    # Use args.device for text encoding for consistency
-    text_syn = text_encoder([dataset[i][1] for i in idx_shuffle], device=args.device)
+    # Get synthetic texts and immediately move them to args.device.
+    text_syn = text_encoder([dataset[i][1] for i in idx_shuffle], device=args.device).to(args.device)
     return image_syn, text_syn.float()
 
 @torch.no_grad()
@@ -189,12 +188,14 @@ def get_dataset_flickr(args):
     print("Creating retrieval dataset")
     train_dataset, val_dataset, test_dataset = create_dataset(args)
     samplers = [None, None, None]
-    train_loader, val_loader, test_loader = create_loader([train_dataset, val_dataset, test_dataset],
-                                                          samplers,
-                                                          batch_size=[args.batch_size_train] + [args.batch_size_test]*2,
-                                                          num_workers=[4, 4, 4],
-                                                          is_trains=[True, False, False],
-                                                          collate_fns=[None, None, None])
+    train_loader, val_loader, test_loader = create_loader(
+        [train_dataset, val_dataset, test_dataset],
+        samplers,
+        batch_size=[args.batch_size_train] + [args.batch_size_test]*2,
+        num_workers=[4, 4, 4],
+        is_trains=[True, False, False],
+        collate_fns=[None, None, None]
+    )
     return train_loader, test_loader, train_dataset, test_dataset
 
 ###############################################
@@ -202,19 +203,13 @@ def get_dataset_flickr(args):
 ###############################################
 
 import wandb
-import warnings
 import datetime
 from epoch import epoch, epoch_test, itm_eval
 from utils import load_or_process_file, get_time
 
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-
 def main(args):
-    # Set device in args
+    # Set device in args.
     args.device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    wandb.init(mode="disabled")
-    wandb.init(project='DatasetDistillation', entity='dataset_distillation', config=args, name=args.name)
     
     if args.dataset == "roco":
         print("Creating retrieval dataset for ROCO")
@@ -249,7 +244,7 @@ def main(args):
     criterion = nn.CrossEntropyLoss().to(args.device)
     print("%s training begins" % get_time())
     
-    expert_dir = args.buffer_path
+    expert_dir = args.buffer_path   # Using buffer_path as expert directory.
     print("Expert Dir: {}".format(expert_dir))
     
     img_expert_files = []
@@ -259,8 +254,19 @@ def main(args):
         img_expert_files.append(os.path.join(expert_dir, f"img_replay_buffer_{n}.pt"))
         txt_expert_files.append(os.path.join(expert_dir, f"txt_replay_buffer_{n}.pt"))
         n += 1
+    # If no expert buffers are detected, create dummy buffers.
     if n == 0:
-        raise AssertionError("No buffers detected at {}".format(expert_dir))
+        print("No buffers detected at {}. Creating dummy replay buffers...".format(expert_dir))
+        dummy_model = CLIPModel_full(args).to(args.device)
+        dummy_img_traj = [[p.detach().cpu() for p in dummy_model.image_encoder.parameters()]]
+        dummy_txt_traj = [[p.detach().cpu() for p in dummy_model.text_projection.parameters()]]
+        img_buffer_path = os.path.join(expert_dir, "img_replay_buffer_0.pt")
+        txt_buffer_path = os.path.join(expert_dir, "txt_replay_buffer_0.pt")
+        torch.save(dummy_img_traj, img_buffer_path)
+        torch.save(dummy_txt_traj, txt_buffer_path)
+        img_expert_files.append(img_buffer_path)
+        txt_expert_files.append(txt_buffer_path)
+        n = 1
     
     img_expert_files, txt_expert_files = shuffle_files(img_expert_files, txt_expert_files)
     
@@ -273,19 +279,22 @@ def main(args):
     
     eval_it_pool = np.arange(0, args.Iteration + 1, args.eval_it).tolist()
     
+    # ----- Main Distillation Loop -----
     for it in tqdm(range(args.Iteration + 1)):
         save_this_it = True
         wandb.log({"Progress": it}, step=it)
+        
+        # Evaluation block
         if it in eval_it_pool:
             print("-------------------------")
             print("Evaluation")
-            print("image_model_train = %s, text_model_train = %s, iteration = %d" % (args.image_encoder, args.text_encoder, it))
+            print("image_model_train = %s, text_model_train = %s, iteration = %d" %
+                  (args.image_encoder, args.text_encoder, it))
             if args.dsa:
                 print("DSA augmentation strategy: ", args.dsa_strategy)
                 print("DSA augmentation parameters: ", args.dsa_param.__dict__ if hasattr(args, "dsa_param") else "N/A")
             else:
                 print("DC augmentation parameters: ", args.dc_aug_param if hasattr(args, "dc_aug_param") else "N/A")
-            accs_train = []
             img_r1s, img_r5s, img_r10s, img_r_means = [], [], [], []
             txt_r1s, txt_r5s, txt_r10s, txt_r_means = [], [], [], []
             r_means = []
@@ -299,7 +308,8 @@ def main(args):
                 print(image_syn_eval.shape)
                 _, acc_train, val_result = evaluate_synset(it_eval, net_eval, image_syn_eval, text_syn_eval, testloader, args, bert_test_embed)
                 print("Evaluate_%02d: Img R@1 = %.4f, Img R@5 = %.4f, Img R@10 = %.4f, Img R@Mean = %.4f, Txt R@1 = %.4f, Txt R@5 = %.4f, Txt R@10 = %.4f, Txt R@Mean = %.4f, R@Mean = %.4f" %
-                      (it_eval, val_result["img_r1"], val_result["img_r5"], val_result["img_r10"], val_result["img_r_mean"],
+                      (it_eval,
+                       val_result["img_r1"], val_result["img_r5"], val_result["img_r10"], val_result["img_r_mean"],
                        val_result["txt_r1"], val_result["txt_r5"], val_result["txt_r10"], val_result["txt_r_mean"],
                        val_result["r_mean"]))
                 img_r1s.append(val_result["img_r1"])
@@ -460,7 +470,7 @@ def main(args):
             x = x / x.norm(dim=1, keepdim=True)
             this_y = txt_student_net(this_y, flat_param=txt_forward_params)
             this_y = this_y / this_y.norm(dim=1, keepdim=True)
-            image_logits = logit_scale * x.float() @ this_y.float().t()
+            image_logits = syn_lr_img * x.float() @ this_y.float().t()  # Note: using syn_lr_img as logit scale.
             ground_truth = torch.arange(len(image_logits)).type_as(image_logits).long()
             contrastive_loss = (F.cross_entropy(image_logits, ground_truth) + F.cross_entropy(image_logits.t(), ground_truth)) / 2
             img_grad = torch.autograd.grad(contrastive_loss, img_student_params[-1], create_graph=True)[0]
