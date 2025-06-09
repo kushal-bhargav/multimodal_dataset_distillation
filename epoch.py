@@ -377,7 +377,7 @@ def epoch_test_metrics(dataloader, model, device, text_embed_input):
         sorted_idx = np.argsort(sim_row)[::-1]
         gt = dataloader.dataset.img2txt[i]
         img_ranks[i] = int(np.min(np.where(np.isin(sorted_idx, gt))[0]))
-        if i % 100 == 0:
+        if i % 10 == 0:
             print(f"DEBUG: Processed image {i}/{B} | Avg Rank: {img_ranks[:i+1].mean():.2f}")
     tr1 = 100.0 * np.sum(img_ranks < 1) / B
     tr5 = 100.0 * np.sum(img_ranks < 5) / B
