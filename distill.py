@@ -20,7 +20,6 @@ from transformers import BertTokenizer, BertConfig, BertModel
 import wandb
 
 # Attempt to import RandomAugment from transform.randaugment.
-# If not found, define a dummy RandomAugment.
 try:
     from transform.randaugment import RandomAugment
 except ImportError:
@@ -34,6 +33,20 @@ except ImportError:
 # Explicitly import transforms and InterpolationMode from torchvision
 from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
+
+# Import dataset functions for flickr and coco
+from data.flickr30k_dataset import flickr30k_train, flickr30k_retrieval_eval
+from data.coco_dataset import coco_train, coco_retrieval_eval, coco_caption_eval
+
+# Attempt to import the ROCO dataset functions. If unsuccessful, define dummy functions.
+try:
+    from data.rocov2Radiology_dataset import roco_train, roco_retrieval_eval
+except ImportError:
+    warnings.warn("Could not import roco_train and roco_retrieval_eval from data.rocov2Radiology_dataset. Dummy definitions will be used.", ImportWarning)
+    def roco_train(transform, image_root, ann_file):
+        raise NotImplementedError("roco_train is not implemented. Please check your module path.")
+    def roco_retrieval_eval(transform, image_root, ann_file, split):
+        raise NotImplementedError("roco_retrieval_eval is not implemented. Please check your module path.")
 
 from data import get_dataset_flickr, textprocess, textprocess_train
 from epoch import evaluate_synset, epoch, epoch_test, itm_eval
@@ -80,9 +93,7 @@ def get_images_texts(n, dataset):
         - A tensor of randomly selected images.
         - A tensor of the corresponding texts, encoded as floats.
     """
-    # Generate n unique random indices
     idx_shuffle = np.random.permutation(len(dataset))[:n]
-    # Initialize the text encoder
     text_encoder = TextEncoder(args)
     image_syn = torch.stack([dataset[i][0] for i in idx_shuffle])
     text_syn = text_encoder([dataset[i][1] for i in idx_shuffle], device="cpu")
@@ -98,9 +109,9 @@ def textprocess(args, testloader):
         chunk_size = 1000  # Reduced chunk size for test texts
         chunks = []
         for i in range(0, len(texts), chunk_size):
-            chunk = net.text_encoder(texts[i:i + chunk_size]).cpu()  # Store output on CPU
+            chunk = net.text_encoder(texts[i:i+chunk_size]).cpu()
             chunks.append(chunk)
-            torch.cuda.empty_cache()  # Free unused memory
+            torch.cuda.empty_cache()
         bert_test_embed = torch.cat(chunks, dim=0)
         bert_test_embed_np = bert_test_embed.numpy()
         np.savez(f'{args.dataset}_{args.text_encoder}_text_embed.npz', bert_test_embed=bert_test_embed_np)
@@ -113,13 +124,13 @@ def textprocess_train(args, texts):
     net = CLIPModel_full(args).to('cuda')
     net.eval()
     if args.dataset in ['flickr', 'coco', 'roco']:
-        chunk_size = 2000  # Bigger chunk for training texts
+        chunk_size = 2000
         chunks = []
         for i in tqdm(range(0, len(texts), chunk_size)):
-            chunk = net.text_encoder(texts[i:i + chunk_size]).cpu()
+            chunk = net.text_encoder(texts[i:i+chunk_size]).cpu()
             chunks.append(chunk)
             del chunk
-            torch.cuda.empty_cache()  # free up memory
+            torch.cuda.empty_cache()
         bert_test_embed = torch.cat(chunks, dim=0)
         print('bert_test_embed.shape: ', bert_test_embed.shape)
         bert_test_embed_np = bert_test_embed.numpy()
@@ -146,17 +157,17 @@ def create_dataset(args, min_scale=0.5):
         transforms.ToTensor(),
         normalize,
     ])
-    if args.dataset=='flickr':          
+    if args.dataset == 'flickr':          
         train_dataset = flickr30k_train(transform_train, args.image_root, args.ann_root)
         val_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
         test_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
         return train_dataset, val_dataset, test_dataset    
-    elif args.dataset=='coco':             
+    elif args.dataset == 'coco':             
         train_dataset = coco_train(transform_train, args.image_root, args.ann_root)
         val_dataset = coco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
         test_dataset = coco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
         return train_dataset, val_dataset, test_dataset     
-    elif args.dataset=='roco':
+    elif args.dataset == 'roco':
         train_dataset = roco_train(transform_train, args.image_root, args.ann_root)
         val_dataset = roco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
         test_dataset = roco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
