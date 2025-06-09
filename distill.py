@@ -11,7 +11,6 @@ import warnings
 import subprocess
 
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -47,7 +46,7 @@ except ImportError:
         def __call__(self, img):
             return img
 
-# ----- Explicit Imports for torchvision modules -----
+# ----- Explicit Imports for torchvision modules ----- 
 from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
 from torch.utils.data import DataLoader
@@ -62,9 +61,9 @@ try:
 except ImportError:
     warnings.warn("Could not import roco_train and roco_retrieval_eval from data.rocov2Radiology_dataset. Dummy definitions will be used.", ImportWarning)
     def roco_train(transform, image_root, ann_file):
-        raise NotImplementedError("roco_train is not implemented. Please check your module path.")
+        raise NotImplementedError("roco_train is not implemented. Check your module path.")
     def roco_retrieval_eval(transform, image_root, ann_file, split):
-        raise NotImplementedError("roco_retrieval_eval is not implemented. Please check your module path.")
+        raise NotImplementedError("roco_retrieval_eval is not implemented. Check your module path.")
 
 # ----- Import helper functions -----
 from data import textprocess, textprocess_train
@@ -96,10 +95,15 @@ def nearest_neighbor(sentences, query_embeddings, database_embeddings):
     return nearest_neighbors
 
 def get_images_texts(n, dataset):
+    """
+    Get n random images and corresponding texts from the dataset.
+    Note: Now uses args.device for text encoding.
+    """
     idx_shuffle = np.random.permutation(len(dataset))[:n]
     text_encoder = TextEncoder(args)
     image_syn = torch.stack([dataset[i][0] for i in idx_shuffle])
-    text_syn = text_encoder([dataset[i][1] for i in idx_shuffle], device="cpu")
+    # Here, we pass args.device instead of "cpu" to keep consistency.
+    text_syn = text_encoder([dataset[i][1] for i in idx_shuffle], device=args.device)
     return image_syn, text_syn.float()
 
 @torch.no_grad()
@@ -119,7 +123,7 @@ def textprocess(args, testloader):
         np.savez(f'{args.dataset}_{args.text_encoder}_text_embed.npz', bert_test_embed=bert_test_embed_np)
         return {'bert_test_embed': bert_test_embed_np}
     else:
-        raise NotImplementedError("Text embedding extraction for this dataset is not implemented.")
+        raise NotImplementedError("Text embedding extraction not implemented for this dataset.")
 
 @torch.no_grad()
 def textprocess_train(args, texts):
@@ -139,7 +143,7 @@ def textprocess_train(args, texts):
         np.savez(f'{args.dataset}_{args.text_encoder}_train_text_embed.npz', bert_test_embed=bert_test_embed_np)
         return {'bert_test_embed': bert_test_embed_np}
     else:
-        raise NotImplementedError("Text embedding extraction for this dataset is not implemented.")
+        raise NotImplementedError("Text embedding extraction not implemented for this dataset.")
 
 def create_dataset(args, min_scale=0.5):
     image_size = getattr(args, "image_size", 224)
@@ -196,9 +200,9 @@ def get_dataset_flickr(args):
                                                           collate_fns=[None, None, None])
     return train_loader, test_loader, train_dataset, test_dataset
 
-##########################################################
+###############################################
 # Main Distillation & Training Pipeline
-##########################################################
+###############################################
 
 import wandb
 import warnings
@@ -211,18 +215,20 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 def main(args):
     if args.dataset == 'roco':
         print("Creating retrieval dataset for ROCO")
+    # Load dataset, create dataloaders.
     trainloader, testloader, train_dataset, test_dataset = get_dataset_flickr(args)
     data = load_or_process_file('text', textprocess, args, testloader)
     bert_test_embed = torch.from_numpy(data['bert_test_embed']).cpu()
     print("Dataset loaded successfully.")
     
-    # --- Training and Evaluation Pipeline ---
+    # -------------------------------
+    # Training and Evaluation Pipeline
+    # -------------------------------
     train_sentences = train_dataset.get_all_captions()
     train_caption = load_or_process_file('train_text', textprocess_train, args, train_sentences)
     train_caption_embed = torch.from_numpy(train_caption['bert_test_embed']).cpu()
     
     image_syn, text_syn = get_images_texts(args.num_queries, train_dataset)
-    
     image_syn = image_syn.detach().to(args.device).requires_grad_(True)
     optimizer_img = torch.optim.SGD([image_syn], lr=args.lr_img, momentum=0.5)
     optimizer_img.zero_grad()
@@ -243,7 +249,7 @@ def main(args):
     criterion = nn.CrossEntropyLoss().to(args.device)
     print('%s training begins' % get_time())
     
-    expert_dir = args.buffer_path
+    expert_dir = args.buffer_path   # Using buffer_path as expert directory.
     print("Expert Dir: {}".format(expert_dir))
     
     img_expert_files = []
@@ -270,6 +276,8 @@ def main(args):
     for it in tqdm(range(args.Iteration + 1)):
         save_this_it = True
         wandb.log({"Progress": it}, step=it)
+        
+        # ------ Evaluation Block ------
         if it in eval_it_pool:
             print('-------------------------\nEvaluation\nimage_model_train = %s, text_model_train = %s, iteration = %d' %
                   (args.image_encoder, args.text_encoder, it))
@@ -279,14 +287,8 @@ def main(args):
             else:
                 print('DC augmentation parameters: \n', args.dc_aug_param if hasattr(args, 'dc_aug_param') else "N/A")
             accs_train = []
-            img_r1s = []
-            img_r5s = []
-            img_r10s = []
-            img_r_means = []
-            txt_r1s = []
-            txt_r5s = []
-            txt_r10s = []
-            txt_r_means = []
+            img_r1s, img_r5s, img_r10s, img_r_means = [], [], [], []
+            txt_r1s, txt_r5s, txt_r10s, txt_r_means = [], [], [], []
             r_means = []
             for it_eval in range(args.num_eval):
                 net_eval = CLIPModel_full(args, eval_stage=args.transfer)
@@ -298,8 +300,7 @@ def main(args):
                 print(image_syn_eval.shape)
                 _, acc_train, val_result = evaluate_synset(it_eval, net_eval, image_syn_eval, text_syn_eval, testloader, args, bert_test_embed)
                 print('Evaluate_%02d: Img R@1 = %.4f, Img R@5 = %.4f, Img R@10 = %.4f, Img R@Mean = %.4f, Txt R@1 = %.4f, Txt R@5 = %.4f, Txt R@10 = %.4f, Txt R@Mean = %.4f, R@Mean = %.4f' %
-                      (it_eval,
-                       val_result['img_r1'], val_result['img_r5'], val_result['img_r10'], val_result['img_r_mean'],
+                      (it_eval, val_result['img_r1'], val_result['img_r5'], val_result['img_r10'], val_result['img_r_mean'],
                        val_result['txt_r1'], val_result['txt_r5'], val_result['txt_r10'], val_result['txt_r_mean'],
                        val_result['r_mean']))
                 img_r1s.append(val_result['img_r1'])
@@ -507,6 +508,7 @@ def main(args):
             print('%s iter = %04d, loss = %.4f' % (get_time(), it, grand_loss.item()))
     wandb.finish()
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Parameter Processing')
     parser.add_argument('--dataset', type=str, default='roco', choices=['roco', 'coco'], help='dataset')
@@ -515,7 +517,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr_txt', type=float, default=1000, help='Learning rate for synthetic texts')
     parser.add_argument('--lr_lr', type=float, default=1e-03, help='Learning rate for updating synthetic LRs')
     parser.add_argument('--Iteration', type=int, default=50000, help='Number of distillation iterations')
-    parser.add_argument('--eval_it', type=int, default=50, help='Evaluation frequency in iterations')
+    parser.add_argument('--eval_it', type=int, default=50, help='Evaluation frequency (iterations)')
     parser.add_argument('--num_eval', type=int, default=5, help='Number of evaluations per eval iteration')
     parser.add_argument('--syn_steps', type=int, default=20, help='Number of synthetic training steps per iteration')
     parser.add_argument('--mini_batch_size', type=int, default=100, help='Mini batch size for synthetic update')
