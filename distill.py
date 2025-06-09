@@ -96,10 +96,12 @@ def nearest_neighbor(sentences, query_embeddings, database_embeddings):
 
 def get_images_texts(n, dataset):
     idx_shuffle = np.random.permutation(len(dataset))[:n]
-    text_encoder = TextEncoder(args)
+    # text_encoder = TextEncoder(args)
+    text_encoder = TextEncoder(args).to(args.device)
     image_syn = torch.stack([dataset[i][0] for i in idx_shuffle])
     # Get synthetic texts and immediately move them to args.device.
-    text_syn = text_encoder([dataset[i][1] for i in idx_shuffle], device=args.device).to(args.device)
+    # text_syn = text_encoder([dataset[i][1] for i in idx_shuffle], device=args.device).to(args.device)
+    text_syn = text_encoder([dataset[i][1] for i in idx_shuffle], device=args.device)
     return image_syn, text_syn.float()
 
 @torch.no_grad()
