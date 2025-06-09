@@ -696,34 +696,44 @@ class TextEncoder(nn.Module):
         self.pretrained = args.text_pretrained
         self.trainable = args.text_trainable
         self.model_name = args.text_encoder
+
         if self.model_name == 'clip':
-            self.model, preprocess = clip.load("ViT-B/32", device='cuda')
+            self.model, _ = clip.load("ViT-B/32", device=args.device)
+            self.tokenizer = clip.tokenize  # placeholder for compatibility
         elif self.model_name == 'bert':
-            if args.text_pretrained:
-                self.model = BERT_model
+            from transformers import BertTokenizer, BertModel, BertConfig
+            self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+            if self.pretrained:
+                self.model = BertModel.from_pretrained("bert-base-uncased")
             else:
                 self.model = BertModel(BertConfig())
                 self.model.init_weights()
-            self.tokenizer = tokenizer
         else:
             raise NotImplementedError
 
+        # Set trainability of model parameters
         for p in self.model.parameters():
             p.requires_grad = self.trainable
 
-        # we are using the CLS token hidden representation as the sentence's embedding
-        self.target_token_idx = 0
-    
+        self.target_token_idx = 0  # CLS token index
+
     def forward(self, texts, device='cuda'):
+        self.model = self.model.to(device)
+
         if self.model_name == 'clip':
-            output = self.model.encode_text(clip.tokenize(texts).to('cuda'))  
+            # CLIP already handles tokenization and device internally
+            tokens = clip.tokenize(texts).to(device)
+            output = self.model.encode_text(tokens)
 
         elif self.model_name == 'bert':
-            # Tokenize the input text
-            encoding = self.tokenizer.batch_encode_plus(texts, return_tensors='pt', padding=True, truncation=True)
+            encoding = self.tokenizer.batch_encode_plus(
+                texts, return_tensors='pt', padding=True, truncation=True
+            )
             input_ids = encoding['input_ids'].to(device)
             attention_mask = encoding['attention_mask'].to(device)
-            output = self.model(input_ids, attention_mask=attention_mask).last_hidden_state[:, self.target_token_idx, :]
+            output = self.model(input_ids=input_ids, attention_mask=attention_mask)
+            output = output.last_hidden_state[:, self.target_token_idx, :]
+
         return output
 
 
