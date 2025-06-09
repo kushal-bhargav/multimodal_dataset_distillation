@@ -50,7 +50,7 @@ def nearest_neighbor(sentences, query_embeddings, database_embeddings):
     Returns:
       A list of the most similar sentences for each embedding in the batch.
     """
-    nearest_neighbors = []
+    nearest_neighbors = []    
     for query in query_embeddings:
         similarities = cosine_similarity(query.reshape(1, -1), database_embeddings)
         most_similar_index = np.argmax(similarities)
@@ -77,7 +77,6 @@ def get_images_texts(n, dataset):
     text_syn = text_encoder([dataset[i][1] for i in idx_shuffle], device="cpu")
     return image_syn, text_syn.float()
 
-
 @torch.no_grad()
 def textprocess(args, testloader):
     net = CLIPModel_full(args).to('cuda')
@@ -98,19 +97,18 @@ def textprocess(args, testloader):
     else:
         raise NotImplementedError("Text embedding extraction for this dataset is not yet implemented.")
 
-
 @torch.no_grad()
 def textprocess_train(args, texts):
     net = CLIPModel_full(args).to('cuda')
     net.eval()
     if args.dataset in ['flickr', 'coco', 'roco']:
-        chunk_size = 2000  # Bigger chunk size for training texts
+        chunk_size = 2000  # Bigger chunk for training texts
         chunks = []
         for i in tqdm(range(0, len(texts), chunk_size)):
             chunk = net.text_encoder(texts[i:i + chunk_size]).cpu()
             chunks.append(chunk)
             del chunk
-            torch.cuda.empty_cache()  # Free memory
+            torch.cuda.empty_cache()  # free up memory
         bert_test_embed = torch.cat(chunks, dim=0)
         print('bert_test_embed.shape: ', bert_test_embed.shape)
         bert_test_embed_np = bert_test_embed.numpy()
@@ -118,7 +116,6 @@ def textprocess_train(args, texts):
         return {'bert_test_embed': bert_test_embed_np}
     else:
         raise NotImplementedError("Text embedding extraction for this dataset is not yet implemented.")
-
 
 def create_dataset(args, min_scale=0.5):
     normalize = transforms.Normalize(
@@ -157,7 +154,6 @@ def create_dataset(args, min_scale=0.5):
         return train_dataset, val_dataset, test_dataset
     else:
         raise NotImplementedError("Dataset not implemented")
-
 
 def create_sampler(datasets, shuffles, num_tasks, global_rank):
     samplers = []
@@ -378,5 +374,7 @@ if __name__ == '__main__':
     parser.add_argument('--only_has_image_projection', type=bool, default=False, help='None')
     parser.add_argument('--grounding', type=bool, default=False, help='None')
     parser.add_argument('--distill', type=bool, default=False, help='if distill')
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        print("Warning: Ignoring unknown arguments:", unknown)
     main(args)
