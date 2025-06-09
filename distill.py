@@ -19,19 +19,17 @@ import math
 from transformers import BertTokenizer, BertConfig, BertModel
 import wandb
 
-# Attempt to import clip; if not available, install it
+# Attempt to import RandomAugment from transform.randaugment.
+# If not found, define a dummy RandomAugment.
 try:
-    import clip
-except ModuleNotFoundError:
-    print("clip module not found. Attempting to install...")
-    subprocess_cmd = [sys.executable, "-m", "pip", "install", "git+https://github.com/openai/CLIP.git"]
-    try:
-        import subprocess
-        subprocess.check_call(subprocess_cmd)
-        import clip
-    except Exception as e:
-        print("Failed to install clip:", e)
-        sys.exit(1)
+    from transform.randaugment import RandomAugment
+except ImportError:
+    warnings.warn("RandomAugment not found; using dummy implementation.")
+    class RandomAugment:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __call__(self, img):
+            return img
 
 # Explicitly import transforms and InterpolationMode from torchvision
 from torchvision import transforms
@@ -49,7 +47,6 @@ def shuffle_files(img_expert_files, txt_expert_files):
     assert len(img_expert_files) == len(txt_expert_files), "Number of image files and text files does not match"
     assert len(img_expert_files) != 0, "No files to shuffle"
     shuffled_indices = np.random.permutation(len(img_expert_files))
-
     # Apply the shuffled indices to both lists
     img_expert_files = np.take(img_expert_files, shuffled_indices)
     txt_expert_files = np.take(txt_expert_files, shuffled_indices)
@@ -59,12 +56,10 @@ def shuffle_files(img_expert_files, txt_expert_files):
 
 def nearest_neighbor(sentences, query_embeddings, database_embeddings):
     """Find the nearest neighbors for a batch of embeddings.
-
     Args:
       sentences: The original sentences from which the embeddings were computed.
       query_embeddings: A batch of embeddings for which to find the nearest neighbors.
       database_embeddings: All pre-computed embeddings.
-
     Returns:
       A list of the most similar sentences for each embedding in the batch.
     """
@@ -77,11 +72,9 @@ def nearest_neighbor(sentences, query_embeddings, database_embeddings):
 
 def get_images_texts(n, dataset):
     """Get random n images and corresponding texts from the dataset.
-
     Args:
       n: Number of images and texts to retrieve.
       dataset: The dataset containing image-text pairs.
-
     Returns:
       A tuple containing two elements:
         - A tensor of randomly selected images.
@@ -89,7 +82,6 @@ def get_images_texts(n, dataset):
     """
     # Generate n unique random indices
     idx_shuffle = np.random.permutation(len(dataset))[:n]
-
     # Initialize the text encoder
     text_encoder = TextEncoder(args)
     image_syn = torch.stack([dataset[i][0] for i in idx_shuffle])
@@ -153,7 +145,7 @@ def create_dataset(args, min_scale=0.5):
         transforms.Resize((args.image_size, args.image_size), interpolation=InterpolationMode.BICUBIC),
         transforms.ToTensor(),
         normalize,
-        ])
+    ])
     if args.dataset=='flickr':          
         train_dataset = flickr30k_train(transform_train, args.image_root, args.ann_root)
         val_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
