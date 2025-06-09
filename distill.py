@@ -120,7 +120,7 @@ def main(args):
     if args.dsa:
         args.dc_aug_param = None
 
-    # wandb.init(mode="disabled")
+    wandb.init(mode="disabled")
     wandb.init(project='DatasetDistillation', entity='dataset_distillation', config=args, name=args.name)
     
     args.dsa_param = ParamDiffAug()
