@@ -22,7 +22,7 @@ import math
 from transformers import BertTokenizer, BertConfig, BertModel
 import wandb
 
-# ----- Automatic Installation Logic for clip -----
+# ----- Automatic Installation for clip -----
 try:
     import clip
 except ModuleNotFoundError:
@@ -46,7 +46,7 @@ except ImportError:
         def __call__(self, img):
             return img
 
-# ----- Explicit Imports for torchvision modules ----- 
+# ----- Explicit imports for torchvision modules and DataLoader -----
 from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
 from torch.utils.data import DataLoader
@@ -55,7 +55,7 @@ from torch.utils.data import DataLoader
 from data.flickr30k_dataset import flickr30k_train, flickr30k_retrieval_eval
 from data.coco_dataset import coco_train, coco_retrieval_eval, coco_caption_eval
 
-# ----- Attempt to import ROCO dataset functions -----
+# ----- Import ROCO dataset functions (or define dummy functions) -----
 try:
     from data.rocov2Radiology_dataset import roco_train, roco_retrieval_eval
 except ImportError:
@@ -65,7 +65,7 @@ except ImportError:
     def roco_retrieval_eval(transform, image_root, ann_file, split):
         raise NotImplementedError("roco_retrieval_eval is not implemented. Check your module path.")
 
-# ----- Import helper functions -----
+# ----- Import helper modules -----
 from data import textprocess, textprocess_train
 from epoch import evaluate_synset, epoch, epoch_test, itm_eval
 from networks import CLIPModel_full, TextEncoder
@@ -95,23 +95,20 @@ def nearest_neighbor(sentences, query_embeddings, database_embeddings):
     return nearest_neighbors
 
 def get_images_texts(n, dataset):
-    """
-    Get n random images and corresponding texts from the dataset.
-    Note: Now uses args.device for text encoding.
-    """
+    # Retrieve n random samples from dataset
     idx_shuffle = np.random.permutation(len(dataset))[:n]
     text_encoder = TextEncoder(args)
     image_syn = torch.stack([dataset[i][0] for i in idx_shuffle])
-    # Here, we pass args.device instead of "cpu" to keep consistency.
+    # Use args.device for text encoding for consistency
     text_syn = text_encoder([dataset[i][1] for i in idx_shuffle], device=args.device)
     return image_syn, text_syn.float()
 
 @torch.no_grad()
 def textprocess(args, testloader):
-    net = CLIPModel_full(args).to('cuda')
+    net = CLIPModel_full(args).to("cuda")
     net.eval()
     texts = testloader.dataset.text
-    if args.dataset in ['flickr', 'coco', 'roco']:
+    if args.dataset in ["flickr", "coco", "roco"]:
         chunk_size = 1000
         chunks = []
         for i in range(0, len(texts), chunk_size):
@@ -120,16 +117,16 @@ def textprocess(args, testloader):
             torch.cuda.empty_cache()
         bert_test_embed = torch.cat(chunks, dim=0)
         bert_test_embed_np = bert_test_embed.numpy()
-        np.savez(f'{args.dataset}_{args.text_encoder}_text_embed.npz', bert_test_embed=bert_test_embed_np)
-        return {'bert_test_embed': bert_test_embed_np}
+        np.savez(f"{args.dataset}_{args.text_encoder}_text_embed.npz", bert_test_embed=bert_test_embed_np)
+        return {"bert_test_embed": bert_test_embed_np}
     else:
         raise NotImplementedError("Text embedding extraction not implemented for this dataset.")
 
 @torch.no_grad()
 def textprocess_train(args, texts):
-    net = CLIPModel_full(args).to('cuda')
+    net = CLIPModel_full(args).to("cuda")
     net.eval()
-    if args.dataset in ['flickr', 'coco', 'roco']:
+    if args.dataset in ["flickr", "coco", "roco"]:
         chunk_size = 2000
         chunks = []
         for i in tqdm(range(0, len(texts), chunk_size)):
@@ -138,10 +135,10 @@ def textprocess_train(args, texts):
             del chunk
             torch.cuda.empty_cache()
         bert_test_embed = torch.cat(chunks, dim=0)
-        print('bert_test_embed.shape: ', bert_test_embed.shape)
+        print("bert_test_embed.shape: ", bert_test_embed.shape)
         bert_test_embed_np = bert_test_embed.numpy()
-        np.savez(f'{args.dataset}_{args.text_encoder}_train_text_embed.npz', bert_test_embed=bert_test_embed_np)
-        return {'bert_test_embed': bert_test_embed_np}
+        np.savez(f"{args.dataset}_{args.text_encoder}_train_text_embed.npz", bert_test_embed=bert_test_embed_np)
+        return {"bert_test_embed": bert_test_embed_np}
     else:
         raise NotImplementedError("Text embedding extraction not implemented for this dataset.")
 
@@ -152,8 +149,8 @@ def create_dataset(args, min_scale=0.5):
     transform_train = transforms.Compose([
         transforms.RandomResizedCrop(image_size, scale=(min_scale, 1.0), interpolation=InterpolationMode.BICUBIC),
         transforms.RandomHorizontalFlip(),
-        RandomAugment(2, 5, isPIL=True, augs=['Identity','AutoContrast','Brightness','Sharpness','Equalize',
-                                               'ShearX','ShearY','TranslateX','TranslateY','Rotate']),
+        RandomAugment(2, 5, isPIL=True, augs=["Identity","AutoContrast","Brightness","Sharpness","Equalize",
+                                               "ShearX","ShearY","TranslateX","TranslateY","Rotate"]),
         transforms.ToTensor(),
         normalize,
     ])
@@ -162,18 +159,18 @@ def create_dataset(args, min_scale=0.5):
         transforms.ToTensor(),
         normalize,
     ])
-    if args.dataset == 'flickr':
+    if args.dataset == "flickr":
         train_dataset = flickr30k_train(transform_train, args.image_root, args.ann_root)
-        val_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
-        test_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
-    elif args.dataset == 'coco':
+        val_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, "val")
+        test_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, "test")
+    elif args.dataset == "coco":
         train_dataset = coco_train(transform_train, args.image_root, args.ann_root)
-        val_dataset = coco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
-        test_dataset = coco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
-    elif args.dataset == 'roco':
+        val_dataset = coco_retrieval_eval(transform_test, args.image_root, args.ann_root, "val")
+        test_dataset = coco_retrieval_eval(transform_test, args.image_root, args.ann_root, "test")
+    elif args.dataset == "roco":
         train_dataset = roco_train(transform_train, args.image_root, args.ann_root)
-        val_dataset = roco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
-        test_dataset = roco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
+        val_dataset = roco_retrieval_eval(transform_test, args.image_root, args.ann_root, "val")
+        test_dataset = roco_retrieval_eval(transform_test, args.image_root, args.ann_root, "test")
     else:
         raise NotImplementedError("Dataset not implemented")
     return train_dataset, val_dataset, test_dataset
@@ -213,20 +210,20 @@ from utils import load_or_process_file, get_time
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 def main(args):
-    if args.dataset == 'roco':
+    # Set device in args
+    args.device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    if args.dataset == "roco":
         print("Creating retrieval dataset for ROCO")
-    # Load dataset, create dataloaders.
     trainloader, testloader, train_dataset, test_dataset = get_dataset_flickr(args)
-    data = load_or_process_file('text', textprocess, args, testloader)
-    bert_test_embed = torch.from_numpy(data['bert_test_embed']).cpu()
+    data = load_or_process_file("text", textprocess, args, testloader)
+    bert_test_embed = torch.from_numpy(data["bert_test_embed"]).cpu()
     print("Dataset loaded successfully.")
     
-    # -------------------------------
-    # Training and Evaluation Pipeline
-    # -------------------------------
+    # --- Training and Evaluation Pipeline ---
     train_sentences = train_dataset.get_all_captions()
-    train_caption = load_or_process_file('train_text', textprocess_train, args, train_sentences)
-    train_caption_embed = torch.from_numpy(train_caption['bert_test_embed']).cpu()
+    train_caption = load_or_process_file("train_text", textprocess_train, args, train_sentences)
+    train_caption_embed = torch.from_numpy(train_caption["bert_test_embed"]).cpu()
     
     image_syn, text_syn = get_images_texts(args.num_queries, train_dataset)
     image_syn = image_syn.detach().to(args.device).requires_grad_(True)
@@ -243,13 +240,13 @@ def main(args):
     
     sentence_list = nearest_neighbor(train_sentences, text_syn.detach().cpu(), train_caption_embed)
     if args.draw:
-        wandb.log({"original_sentence_list": wandb.Html('<br>'.join(sentence_list))})
+        wandb.log({"original_sentence_list": wandb.Html("<br>".join(sentence_list))})
         wandb.log({"original_synthetic_images": wandb.Image(torch.nan_to_num(image_syn.detach().cpu()))})
     
     criterion = nn.CrossEntropyLoss().to(args.device)
-    print('%s training begins' % get_time())
+    print("%s training begins" % get_time())
     
-    expert_dir = args.buffer_path   # Using buffer_path as expert directory.
+    expert_dir = args.buffer_path
     print("Expert Dir: {}".format(expert_dir))
     
     img_expert_files = []
@@ -276,16 +273,15 @@ def main(args):
     for it in tqdm(range(args.Iteration + 1)):
         save_this_it = True
         wandb.log({"Progress": it}, step=it)
-        
-        # ------ Evaluation Block ------
         if it in eval_it_pool:
-            print('-------------------------\nEvaluation\nimage_model_train = %s, text_model_train = %s, iteration = %d' %
-                  (args.image_encoder, args.text_encoder, it))
+            print("-------------------------")
+            print("Evaluation")
+            print("image_model_train = %s, text_model_train = %s, iteration = %d" % (args.image_encoder, args.text_encoder, it))
             if args.dsa:
-                print('DSA augmentation strategy: \n', args.dsa_strategy)
-                print('DSA augmentation parameters: \n', args.dsa_param.__dict__ if hasattr(args, 'dsa_param') else "N/A")
+                print("DSA augmentation strategy: ", args.dsa_strategy)
+                print("DSA augmentation parameters: ", args.dsa_param.__dict__ if hasattr(args, "dsa_param") else "N/A")
             else:
-                print('DC augmentation parameters: \n', args.dc_aug_param if hasattr(args, 'dc_aug_param') else "N/A")
+                print("DC augmentation parameters: ", args.dc_aug_param if hasattr(args, "dc_aug_param") else "N/A")
             accs_train = []
             img_r1s, img_r5s, img_r10s, img_r_means = [], [], [], []
             txt_r1s, txt_r5s, txt_r10s, txt_r_means = [], [], [], []
@@ -299,29 +295,29 @@ def main(args):
                 args.lr_net = syn_lr_img.item()
                 print(image_syn_eval.shape)
                 _, acc_train, val_result = evaluate_synset(it_eval, net_eval, image_syn_eval, text_syn_eval, testloader, args, bert_test_embed)
-                print('Evaluate_%02d: Img R@1 = %.4f, Img R@5 = %.4f, Img R@10 = %.4f, Img R@Mean = %.4f, Txt R@1 = %.4f, Txt R@5 = %.4f, Txt R@10 = %.4f, Txt R@Mean = %.4f, R@Mean = %.4f' %
-                      (it_eval, val_result['img_r1'], val_result['img_r5'], val_result['img_r10'], val_result['img_r_mean'],
-                       val_result['txt_r1'], val_result['txt_r5'], val_result['txt_r10'], val_result['txt_r_mean'],
-                       val_result['r_mean']))
-                img_r1s.append(val_result['img_r1'])
-                img_r5s.append(val_result['img_r5'])
-                img_r10s.append(val_result['img_r10'])
-                img_r_means.append(val_result['img_r_mean'])
-                txt_r1s.append(val_result['txt_r1'])
-                txt_r5s.append(val_result['txt_r5'])
-                txt_r10s.append(val_result['txt_r10'])
-                txt_r_means.append(val_result['txt_r_mean'])
-                r_means.append(val_result['r_mean'])
+                print("Evaluate_%02d: Img R@1 = %.4f, Img R@5 = %.4f, Img R@10 = %.4f, Img R@Mean = %.4f, Txt R@1 = %.4f, Txt R@5 = %.4f, Txt R@10 = %.4f, Txt R@Mean = %.4f, R@Mean = %.4f" %
+                      (it_eval, val_result["img_r1"], val_result["img_r5"], val_result["img_r10"], val_result["img_r_mean"],
+                       val_result["txt_r1"], val_result["txt_r5"], val_result["txt_r10"], val_result["txt_r_mean"],
+                       val_result["r_mean"]))
+                img_r1s.append(val_result["img_r1"])
+                img_r5s.append(val_result["img_r5"])
+                img_r10s.append(val_result["img_r10"])
+                img_r_means.append(val_result["img_r_mean"])
+                txt_r1s.append(val_result["txt_r1"])
+                txt_r5s.append(val_result["txt_r5"])
+                txt_r10s.append(val_result["txt_r10"])
+                txt_r_means.append(val_result["txt_r_mean"])
+                r_means.append(val_result["r_mean"])
                 if not args.std:
-                    wandb.log({"txt_r1": val_result['txt_r1']})
-                    wandb.log({"txt_r5": val_result['txt_r5']})
-                    wandb.log({"txt_r10": val_result['txt_r10']})
-                    wandb.log({"txt_r_mean": val_result['txt_r_mean']})
-                    wandb.log({"img_r1": val_result['img_r1']})
-                    wandb.log({"img_r5": val_result['img_r5']})
-                    wandb.log({"img_r10": val_result['img_r10']})
-                    wandb.log({"img_r_mean": val_result['img_r_mean']})
-                    wandb.log({"r_mean": val_result['r_mean']})
+                    wandb.log({"txt_r1": val_result["txt_r1"]})
+                    wandb.log({"txt_r5": val_result["txt_r5"]})
+                    wandb.log({"txt_r10": val_result["txt_r10"]})
+                    wandb.log({"txt_r_mean": val_result["txt_r_mean"]})
+                    wandb.log({"img_r1": val_result["img_r1"]})
+                    wandb.log({"img_r5": val_result["img_r5"]})
+                    wandb.log({"img_r10": val_result["img_r10"]})
+                    wandb.log({"img_r_mean": val_result["img_r_mean"]})
+                    wandb.log({"r_mean": val_result["r_mean"]})
             if args.std:
                 img_r1_mean, img_r1_std = np.mean(img_r1s), np.std(img_r1s)
                 img_r5_mean, img_r5_std = np.mean(img_r5s), np.std(img_r5s)
@@ -332,15 +328,15 @@ def main(args):
                 txt_r10_mean, txt_r10_std = np.mean(txt_r10s), np.std(txt_r10s)
                 txt_r_mean_mean, txt_r_mean_std = np.mean(txt_r_means), np.std(txt_r_means)
                 r_mean_mean, r_mean_std = np.mean(r_means), np.std(r_means)
-                wandb.log({'Mean/txt_r1': txt_r1_mean, 'Std/txt_r1': txt_r1_std})
-                wandb.log({'Mean/txt_r5': txt_r5_mean, 'Std/txt_r5': txt_r5_std})
-                wandb.log({'Mean/txt_r10': txt_r10_mean, 'Std/txt_r10': txt_r10_std})
-                wandb.log({'Mean/txt_r_mean': txt_r_mean_mean, 'Std/txt_r_mean': txt_r_mean_std})
-                wandb.log({'Mean/img_r1': img_r1_mean, 'Std/img_r1': img_r1_std})
-                wandb.log({'Mean/img_r5': img_r5_mean, 'Std/img_r5': img_r5_std})
-                wandb.log({'Mean/img_r10': img_r10_mean, 'Std/img_r10': img_r10_std})
-                wandb.log({'Mean/img_r_mean': img_r_mean_mean, 'Std/img_r_mean': img_r_mean_std})
-                wandb.log({'Mean/r_mean': r_mean_mean, 'Std/r_mean': r_mean_std})
+                wandb.log({"Mean/txt_r1": txt_r1_mean, "Std/txt_r1": txt_r1_std})
+                wandb.log({"Mean/txt_r5": txt_r5_mean, "Std/txt_r5": txt_r5_std})
+                wandb.log({"Mean/txt_r10": txt_r10_mean, "Std/txt_r10": txt_r10_std})
+                wandb.log({"Mean/txt_r_mean": txt_r_mean_mean, "Std/txt_r_mean": txt_r_mean_std})
+                wandb.log({"Mean/img_r1": img_r1_mean, "Std/img_r1": img_r1_std})
+                wandb.log({"Mean/img_r5": img_r5_mean, "Std/img_r5": img_r5_std})
+                wandb.log({"Mean/img_r10": img_r10_mean, "Std/img_r10": img_r10_std})
+                wandb.log({"Mean/img_r_mean": img_r_mean_mean, "Std/img_r_mean": img_r_mean_std})
+                wandb.log({"Mean/r_mean": r_mean_mean, "Std/r_mean": r_mean_std})
         if it in eval_it_pool and (save_this_it or it % 1000 == 0):
             if args.draw:
                 with torch.no_grad():
@@ -361,10 +357,10 @@ def main(args):
                         sentence_list = sentence_list[:90]
                         torchvision.utils.save_image(grid, os.path.join(save_dir, f"synthetic_images_{it}.png"))
                         with open(os.path.join(save_dir, f"synthetic_sentences_{it}.txt"), "w") as file:
-                            file.write('\n'.join(sentence_list))
+                            file.write("\n".join(sentence_list))
                         wandb.log({"Synthetic_Images": wandb.Image(torch.nan_to_num(grid.detach().cpu()))}, step=it)
-                        wandb.log({'Synthetic_Pixels': wandb.Histogram(torch.nan_to_num(image_save.detach().cpu()))}, step=it)
-                        wandb.log({"Synthetic_Sentences": wandb.Html('<br>'.join(sentence_list))}, step=it)
+                        wandb.log({"Synthetic_Pixels": wandb.Histogram(torch.nan_to_num(image_save.detach().cpu()))}, step=it)
+                        wandb.log({"Synthetic_Sentences": wandb.Html("<br>".join(sentence_list))}, step=it)
                         print("finish saving images")
                         for clip_val in [2.5]:
                             std = torch.std(image_save)
@@ -386,7 +382,7 @@ def main(args):
                             upsampled = torch.repeat_interleave(upsampled, repeats=4, dim=3)
                         grid = torchvision.utils.make_grid(upsampled, nrow=10, normalize=True, scale_each=True)
                         wandb.log({"Reconstructed_Images": wandb.Image(torch.nan_to_num(grid))}, step=it)
-                        wandb.log({'Reconstructed_Pixels': wandb.Histogram(torch.nan_to_num(image_save.detach().cpu()))}, step=it)
+                        wandb.log({"Reconstructed_Pixels": wandb.Histogram(torch.nan_to_num(image_save.detach().cpu()))}, step=it)
                         for clip_val in [2.5]:
                             std = torch.std(image_save)
                             mean = torch.mean(image_save)
@@ -402,8 +398,8 @@ def main(args):
         wandb.log({"Synthetic_LR_Text": syn_lr_txt.detach().cpu()}, step=it)
         torch.cuda.empty_cache()
         student_net = CLIPModel_full(args)
-        img_student_net = ReparamModule(student_net.image_encoder.to('cpu')).to('cuda')
-        txt_student_net = ReparamModule(student_net.text_projection.to('cpu')).to('cuda')
+        img_student_net = ReparamModule(student_net.image_encoder.to("cpu")).to("cuda")
+        txt_student_net = ReparamModule(student_net.text_projection.to("cpu")).to("cuda")
         if args.distributed:
             img_student_net = torch.nn.DataParallel(img_student_net)
             txt_student_net = torch.nn.DataParallel(txt_student_net)
@@ -505,64 +501,63 @@ def main(args):
         for param in txt_student_params:
             del param
         if it % 10 == 0:
-            print('%s iter = %04d, loss = %.4f' % (get_time(), it, grand_loss.item()))
+            print("%s iter = %04d, loss = %.4f" % (get_time(), it, grand_loss.item()))
     wandb.finish()
 
-
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Parameter Processing')
-    parser.add_argument('--dataset', type=str, default='roco', choices=['roco', 'coco'], help='dataset')
-    parser.add_argument('--num_queries', type=int, default=100, help='Number of queries for synthetic data')
-    parser.add_argument('--lr_img', type=float, default=1000, help='Learning rate for synthetic images')
-    parser.add_argument('--lr_txt', type=float, default=1000, help='Learning rate for synthetic texts')
-    parser.add_argument('--lr_lr', type=float, default=1e-03, help='Learning rate for updating synthetic LRs')
-    parser.add_argument('--Iteration', type=int, default=50000, help='Number of distillation iterations')
-    parser.add_argument('--eval_it', type=int, default=50, help='Evaluation frequency (iterations)')
-    parser.add_argument('--num_eval', type=int, default=5, help='Number of evaluations per eval iteration')
-    parser.add_argument('--syn_steps', type=int, default=20, help='Number of synthetic training steps per iteration')
-    parser.add_argument('--mini_batch_size', type=int, default=100, help='Mini batch size for synthetic update')
-    parser.add_argument('--max_start_epoch', type=int, default=25, help='Maximum starting epoch for expert trajectory')
-    parser.add_argument('--expert_epochs', type=int, default=3, help='Number of expert epochs to jump for targets')
-    parser.add_argument('--ipc', type=int, default=1, help='Images per class (IPC)')
-    parser.add_argument('--force_save', action='store_true', help='Force saving of synthetic images')
-    parser.add_argument('--draw', type=bool, default=True, help='Enable saving drawn images')
-    parser.add_argument('--transfer', type=bool, default=False, help='For transfer evaluation')
-    parser.add_argument('--std', type=bool, default=False, help='Log standard deviation of metrics')
-    parser.add_argument('--disable_wandb', action='store_true', help='Disable wandb logging')
-    parser.add_argument('--num_experts', type=int, default=100, help='Number of expert iterations')
-    parser.add_argument('--lr_teacher_img', type=float, default=0.1, help='Learning rate for teacher image model')
-    parser.add_argument('--lr_teacher_txt', type=float, default=0.1, help='Learning rate for teacher text model')
-    parser.add_argument('--batch_train', type=int, default=128, help='Batch size for training networks')
-    parser.add_argument('--dsa', type=str, default='True', choices=['True', 'False'], help='Whether to use differentiable Siamese augmentation')
-    parser.add_argument('--dsa_strategy', type=str, default='color_crop_cutout_flip_scale_rotate', help='Differentiable Siamese augmentation strategy')
-    parser.add_argument('--data_path', type=str, default='/kaggle/input/roco-dataset/', help='Dataset path')
-    parser.add_argument('--buffer_path', type=str, default='/kaggle/working', help='Buffer path')
-    parser.add_argument('--train_epochs', type=int, default=50, help='Number of training epochs (for teacher update)')
-    parser.add_argument('--zca', action='store_true', help='Use ZCA whitening')
-    parser.add_argument('--decay', action='store_true', help='Enable LR decay')
-    parser.add_argument('--mom', type=float, default=0, help='Momentum')
-    parser.add_argument('--l2', type=float, default=0, help='L2 regularization')
-    parser.add_argument('--save_interval', type=int, default=10, help='Save interval')
-    parser.add_argument('--name', type=str, default=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), help='Name of wandb run')
-    parser.add_argument('--text_pretrained', type=bool, default=True, help='Text pretrained')
-    parser.add_argument('--image_pretrained', type=bool, default=True, help='Image pretrained')
-    parser.add_argument('--text_trainable', type=bool, default=False, help='Text trainable')
-    parser.add_argument('--image_trainable', type=bool, default=True, help='Image trainable')
-    parser.add_argument('--batch_size_train', type=int, default=128, help='Training batch size')
-    parser.add_argument('--batch_size_test', type=int, default=128, help='Testing batch size')
-    parser.add_argument('--image_root', type=str, default='/kaggle/input/roco-dataset/all_data/train/radiology/images/', help='Location of image root')
-    parser.add_argument('--ann_root', type=str, default='/kaggle/input/roco-dataset/all_data/train/radiologytraindata.csv', help='Annotation file path')
-    parser.add_argument('--image_size', type=int, default=224, help='Image size')
-    parser.add_argument('--k_test', type=int, default=128, help='k_test')
-    parser.add_argument('--load_npy', type=bool, default=False, help='Load npy flag')
-    parser.add_argument('--image_encoder', type=str, default='resnet50', choices=['nfnet','resnet18_gn','vit_tiny','nf_resnet50','nf_regnet'], help='Image encoder')
-    parser.add_argument('--text_encoder', type=str, default='bert', choices=['bert','clip'], help='Text encoder')
-    parser.add_argument('--margin', default=0.2, type=float, help='Rank loss margin')
-    parser.add_argument('--measure', default='cosine', help='Similarity measure (cosine|order)')
-    parser.add_argument('--max_violation', action='store_true', help='Use max instead of sum in rank loss')
-    parser.add_argument('--only_has_image_projection', type=bool, default=False, help='Not used')
-    parser.add_argument('--grounding', type=bool, default=False, help='Not used')
-    parser.add_argument('--distill', type=bool, default=False, help='If distill')
+    parser = argparse.ArgumentParser(description="Parameter Processing")
+    parser.add_argument("--dataset", type=str, default="roco", choices=["roco", "coco"], help="dataset")
+    parser.add_argument("--num_queries", type=int, default=100, help="Number of queries for synthetic data")
+    parser.add_argument("--lr_img", type=float, default=1000, help="Learning rate for synthetic images")
+    parser.add_argument("--lr_txt", type=float, default=1000, help="Learning rate for synthetic texts")
+    parser.add_argument("--lr_lr", type=float, default=1e-03, help="Learning rate for updating synthetic LRs")
+    parser.add_argument("--Iteration", type=int, default=50000, help="Number of distillation iterations")
+    parser.add_argument("--eval_it", type=int, default=50, help="Evaluation frequency (iterations)")
+    parser.add_argument("--num_eval", type=int, default=5, help="Number of evaluations per eval iteration")
+    parser.add_argument("--syn_steps", type=int, default=20, help="Number of synthetic training steps per iteration")
+    parser.add_argument("--mini_batch_size", type=int, default=100, help="Mini batch size for synthetic update")
+    parser.add_argument("--max_start_epoch", type=int, default=25, help="Maximum starting epoch for expert trajectory")
+    parser.add_argument("--expert_epochs", type=int, default=3, help="Number of expert epochs to jump for targets")
+    parser.add_argument("--ipc", type=int, default=1, help="Images per class (IPC)")
+    parser.add_argument("--force_save", action="store_true", help="Force saving of synthetic images")
+    parser.add_argument("--draw", type=bool, default=True, help="Enable saving drawn images")
+    parser.add_argument("--transfer", type=bool, default=False, help="For transfer evaluation")
+    parser.add_argument("--std", type=bool, default=False, help="Log std of metrics")
+    parser.add_argument("--disable_wandb", action="store_true", help="Disable wandb logging")
+    parser.add_argument("--num_experts", type=int, default=100, help="Number of expert iterations")
+    parser.add_argument("--lr_teacher_img", type=float, default=0.1, help="Learning rate for teacher image model")
+    parser.add_argument("--lr_teacher_txt", type=float, default=0.1, help="Learning rate for teacher text model")
+    parser.add_argument("--batch_train", type=int, default=128, help="Batch size for training networks")
+    parser.add_argument("--dsa", type=str, default="True", choices=["True", "False"], help="Use differentiable Siamese augmentation")
+    parser.add_argument("--dsa_strategy", type=str, default="color_crop_cutout_flip_scale_rotate", help="Differentiable Siamese augmentation strategy")
+    parser.add_argument("--data_path", type=str, default="/kaggle/input/roco-dataset/", help="Dataset path")
+    parser.add_argument("--buffer_path", type=str, default="/kaggle/working", help="Buffer path")
+    parser.add_argument("--train_epochs", type=int, default=50, help="Number of training epochs (for teacher update)")
+    parser.add_argument("--zca", action="store_true", help="Use ZCA whitening")
+    parser.add_argument("--decay", action="store_true", help="Enable LR decay")
+    parser.add_argument("--mom", type=float, default=0, help="Momentum")
+    parser.add_argument("--l2", type=float, default=0, help="L2 regularization")
+    parser.add_argument("--save_interval", type=int, default=10, help="Save interval")
+    parser.add_argument("--name", type=str, default=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), help="Name of wandb run")
+    parser.add_argument("--text_pretrained", type=bool, default=True, help="Text pretrained")
+    parser.add_argument("--image_pretrained", type=bool, default=True, help="Image pretrained")
+    parser.add_argument("--text_trainable", type=bool, default=False, help="Text trainable")
+    parser.add_argument("--image_trainable", type=bool, default=True, help="Image trainable")
+    parser.add_argument("--batch_size_train", type=int, default=128, help="Training batch size")
+    parser.add_argument("--batch_size_test", type=int, default=128, help="Testing batch size")
+    parser.add_argument("--image_root", type=str, default="/kaggle/input/roco-dataset/all_data/train/radiology/images/", help="Location of image root")
+    parser.add_argument("--ann_root", type=str, default="/kaggle/input/roco-dataset/all_data/train/radiologytraindata.csv", help="Annotation file path")
+    parser.add_argument("--image_size", type=int, default=224, help="Image size")
+    parser.add_argument("--k_test", type=int, default=128, help="k_test")
+    parser.add_argument("--load_npy", type=bool, default=False, help="Load npy flag")
+    parser.add_argument("--image_encoder", type=str, default="resnet50", choices=["nfnet", "resnet18_gn", "vit_tiny", "nf_resnet50", "nf_regnet"], help="Image encoder")
+    parser.add_argument("--text_encoder", type=str, default="bert", choices=["bert", "clip"], help="Text encoder")
+    parser.add_argument("--margin", default=0.2, type=float, help="Rank loss margin")
+    parser.add_argument("--measure", default="cosine", help="Similarity measure (cosine|order)")
+    parser.add_argument("--max_violation", action="store_true", help="Use max instead of sum in rank loss")
+    parser.add_argument("--only_has_image_projection", type=bool, default=False, help="Not used")
+    parser.add_argument("--grounding", type=bool, default=False, help="Not used")
+    parser.add_argument("--distill", type=bool, default=False, help="If distill")
     args, unknown = parser.parse_known_args()
     if unknown:
         print("Warning: Ignoring unknown arguments:", unknown)
