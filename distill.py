@@ -30,9 +30,10 @@ except ImportError:
         def __call__(self, img):
             return img
 
-# Explicitly import transforms and InterpolationMode from torchvision.
+# Explicitly import transforms and InterpolationMode
 from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
+from torch.utils.data import DataLoader  # Ensure DataLoader is imported
 
 # Import dataset functions for flickr and coco.
 from data.flickr30k_dataset import flickr30k_train, flickr30k_retrieval_eval
@@ -54,9 +55,6 @@ from networks import CLIPModel_full, TextEncoder
 from reparam_module import ReparamModule
 from utils import DiffAugment, ParamDiffAug, TensorDataset, get_dataset, get_network, get_eval_pool, get_time, load_or_process_file
 
-# Explicitly import DataLoader from torch.utils.data.
-from torch.utils.data import DataLoader
-
 
 def shuffle_files(img_expert_files, txt_expert_files):
     # Check if both lists have the same length and if the lists are not empty.
@@ -77,6 +75,7 @@ def nearest_neighbor(sentences, query_embeddings, database_embeddings):
       sentences: The original sentences from which the embeddings were computed.
       query_embeddings: A batch of embeddings for which to find the nearest neighbors.
       database_embeddings: All pre-computed embeddings.
+
     Returns:
       A list of the most similar sentences for each embedding in the batch.
     """
@@ -93,6 +92,7 @@ def get_images_texts(n, dataset):
     Args:
       n: Number of images and texts to retrieve.
       dataset: The dataset containing image-text pairs.
+
     Returns:
       A tuple containing two elements:
         - A tensor of randomly selected images.
@@ -144,7 +144,7 @@ def textprocess_train(args, texts):
         raise NotImplementedError("Text embedding extraction for this dataset is not yet implemented.")
 
 def create_dataset(args, min_scale=0.5):
-    # Use a default image_size of 224 if not provided.
+    # Use attribute fallback: if image_size is missing in args, default to 224.
     image_size = getattr(args, "image_size", 224)
     normalize = transforms.Normalize(
         (0.48145466, 0.4578275, 0.40821073),
@@ -163,11 +163,11 @@ def create_dataset(args, min_scale=0.5):
         transforms.ToTensor(),
         normalize,
     ])
-    if args.dataset == 'flickr':          
+    if args.dataset == 'flickr':
         train_dataset = flickr30k_train(transform_train, args.image_root, args.ann_root)
         val_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
         test_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
-    elif args.dataset == 'coco':             
+    elif args.dataset == 'coco':
         train_dataset = coco_train(transform_train, args.image_root, args.ann_root)
         val_dataset = coco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
         test_dataset = coco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
@@ -175,17 +175,10 @@ def create_dataset(args, min_scale=0.5):
         train_dataset = roco_train(transform_train, args.image_root, args.ann_root)
         val_dataset = roco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
         test_dataset = roco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
-    else: 
+    else:
         raise NotImplementedError("Dataset not implemented")
     
     return train_dataset, val_dataset, test_dataset
-
-def create_sampler(datasets, shuffles, num_tasks, global_rank):
-    samplers = []
-    for dataset, shuffle in zip(datasets, shuffles):
-        sampler = torch.utils.data.DistributedSampler(dataset, num_replicas=num_tasks, rank=global_rank, shuffle=shuffle)
-        samplers.append(sampler)
-    return samplers     
 
 def create_loader(datasets, samplers, batch_size, num_workers, is_trains, collate_fns):
     loaders = []
@@ -203,7 +196,7 @@ def create_loader(datasets, samplers, batch_size, num_workers, is_trains, collat
             drop_last=drop_last,
         )
         loaders.append(loader)
-    return loaders     
+    return loaders
 
 def get_dataset_flickr(args):
     print("Creating retrieval dataset")
@@ -232,7 +225,7 @@ from utils import load_or_process_file
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 def main(args):
-    # Choose dataset loader based on dataset argument.
+    # For ROCO, we print a message.
     if args.dataset == 'roco':
         print("Creating retrieval dataset for ROCO")
     trainloader, testloader, train_dataset, test_dataset = get_dataset_flickr(args)
@@ -240,8 +233,9 @@ def main(args):
     bert_test_embed = torch.from_numpy(data['bert_test_embed']).cpu()
 
     print("Dataset loaded successfully.")
-    # (Rest of your training pipeline would follow here.)
-    
+
+    # (Rest of training and evaluation pipeline would follow...)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Parameter Processing')
     parser.add_argument('--dataset', type=str, default='roco', choices=['roco', 'coco'], help='dataset')
