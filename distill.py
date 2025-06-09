@@ -212,6 +212,9 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 def main(args):
     # Set device in args
     args.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    wandb.init(mode="disabled")
+    wandb.init(project='DatasetDistillation', entity='dataset_distillation', config=args, name=args.name)
     
     if args.dataset == "roco":
         print("Creating retrieval dataset for ROCO")
