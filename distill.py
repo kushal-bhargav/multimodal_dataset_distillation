@@ -19,7 +19,21 @@ import math
 from transformers import BertTokenizer, BertConfig, BertModel
 import wandb
 
-# NEW: Import transforms and InterpolationMode explicitly
+# Attempt to import clip; if not available, install it
+try:
+    import clip
+except ModuleNotFoundError:
+    print("clip module not found. Attempting to install...")
+    subprocess_cmd = [sys.executable, "-m", "pip", "install", "git+https://github.com/openai/CLIP.git"]
+    try:
+        import subprocess
+        subprocess.check_call(subprocess_cmd)
+        import clip
+    except Exception as e:
+        print("Failed to install clip:", e)
+        sys.exit(1)
+
+# Explicitly import transforms and InterpolationMode from torchvision
 from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
 
@@ -35,7 +49,7 @@ def shuffle_files(img_expert_files, txt_expert_files):
     assert len(img_expert_files) == len(txt_expert_files), "Number of image files and text files does not match"
     assert len(img_expert_files) != 0, "No files to shuffle"
     shuffled_indices = np.random.permutation(len(img_expert_files))
-    
+
     # Apply the shuffled indices to both lists
     img_expert_files = np.take(img_expert_files, shuffled_indices)
     txt_expert_files = np.take(txt_expert_files, shuffled_indices)
@@ -54,13 +68,11 @@ def nearest_neighbor(sentences, query_embeddings, database_embeddings):
     Returns:
       A list of the most similar sentences for each embedding in the batch.
     """
-    nearest_neighbors = []
-    
+    nearest_neighbors = []    
     for query in query_embeddings:
         similarities = cosine_similarity(query.reshape(1, -1), database_embeddings)
         most_similar_index = np.argmax(similarities)
         nearest_neighbors.append(sentences[most_similar_index])
-        
     return nearest_neighbors
 
 def get_images_texts(n, dataset):
@@ -80,19 +92,15 @@ def get_images_texts(n, dataset):
 
     # Initialize the text encoder
     text_encoder = TextEncoder(args)
-
     image_syn = torch.stack([dataset[i][0] for i in idx_shuffle])
     text_syn = text_encoder([dataset[i][1] for i in idx_shuffle], device="cpu")
-
     return image_syn, text_syn.float()
-
 
 @torch.no_grad()
 def textprocess(args, testloader):
     net = CLIPModel_full(args).to('cuda')
     net.eval()
     texts = testloader.dataset.text
-
     # Process text embeddings for flickr, coco, and roco
     if args.dataset in ['flickr', 'coco', 'roco']:
         chunk_size = 1000  # Reduced chunk size for test texts
