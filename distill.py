@@ -19,6 +19,9 @@ import math
 from transformers import BertTokenizer, BertConfig, BertModel
 import wandb
 
+# NEW: Import transforms from torchvision to resolve NameError
+from torchvision import transforms
+
 from data import get_dataset_flickr, textprocess, textprocess_train
 from epoch import evaluate_synset, epoch, epoch_test, itm_eval
 from networks import CLIPModel_full, TextEncoder
@@ -125,9 +128,8 @@ def create_dataset(args, min_scale=0.5):
         transforms.RandomResizedCrop(args.image_size, scale=(min_scale, 1.0), interpolation=InterpolationMode.BICUBIC),
         transforms.RandomHorizontalFlip(),
         RandomAugment(2, 5, isPIL=True, augs=[
-            'Identity', 'AutoContrast', 'Brightness', 'Sharpness', 'Equalize',
-            'ShearX', 'ShearY', 'TranslateX', 'TranslateY', 'Rotate'
-        ]),
+            'Identity','AutoContrast','Brightness','Sharpness','Equalize',
+            'ShearX','ShearY','TranslateX','TranslateY','Rotate']),
         transforms.ToTensor(),
         normalize,
     ])
@@ -135,32 +137,31 @@ def create_dataset(args, min_scale=0.5):
         transforms.Resize((args.image_size, args.image_size), interpolation=InterpolationMode.BICUBIC),
         transforms.ToTensor(),
         normalize,
-    ])
-
-    if args.dataset == 'flickr':
+        ])
+    if args.dataset=='flickr':          
         train_dataset = flickr30k_train(transform_train, args.image_root, args.ann_root)
         val_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
         test_dataset = flickr30k_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
-        return train_dataset, val_dataset, test_dataset
-    elif args.dataset == 'coco':
+        return train_dataset, val_dataset, test_dataset    
+    elif args.dataset=='coco':             
         train_dataset = coco_train(transform_train, args.image_root, args.ann_root)
         val_dataset = coco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
         test_dataset = coco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
-        return train_dataset, val_dataset, test_dataset
-    elif args.dataset == 'roco':
+        return train_dataset, val_dataset, test_dataset     
+    elif args.dataset=='roco':
         train_dataset = roco_train(transform_train, args.image_root, args.ann_root)
         val_dataset = roco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'val')
         test_dataset = roco_retrieval_eval(transform_test, args.image_root, args.ann_root, 'test')
-        return train_dataset, val_dataset, test_dataset
-    else:
-        raise NotImplementedError("Dataset not implemented")
+        return train_dataset, val_dataset, test_dataset 
+    else: 
+        raise NotImplementedError
 
 def create_sampler(datasets, shuffles, num_tasks, global_rank):
     samplers = []
     for dataset, shuffle in zip(datasets, shuffles):
         sampler = torch.utils.data.DistributedSampler(dataset, num_replicas=num_tasks, rank=global_rank, shuffle=shuffle)
         samplers.append(sampler)
-    return samplers
+    return samplers     
 
 def create_loader(datasets, samplers, batch_size, num_workers, is_trains, collate_fns):
     loaders = []
@@ -180,9 +181,9 @@ def create_loader(datasets, samplers, batch_size, num_workers, is_trains, collat
             shuffle=shuffle,
             collate_fn=collate_fn,
             drop_last=drop_last,
-        )
+        )              
         loaders.append(loader)
-    return loaders
+    return loaders     
 
 def get_dataset_flickr(args):
     print("Creating retrieval dataset")
