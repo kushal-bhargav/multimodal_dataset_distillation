@@ -477,6 +477,8 @@ def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, 
     images_train = images_train.to(args.device)
     labels_train = labels_train.to(args.device)
 
+    args.distill = True  # ✅ Force distill mode to ensure 2-value unpacking
+
     lr = float(args.lr_net)
     Epoch = int(args.epoch_eval_train)
     opt_img = torch.optim.SGD(net.image_encoder.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
