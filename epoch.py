@@ -291,10 +291,15 @@ def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
     loss_avg, acc_avg, num_exp = 0.0, 0.0, 0
 
     for i, data in tqdm(enumerate(dataloader), desc=f"Training Epoch {e}"):
+        # if args.distill:
+        #     image, caption = data[:2]
+        # else:
+        #     image, caption, index = data[:3]
         if args.distill:
-            image, caption = data[:2]
+            image, caption = data
         else:
-            image, caption, index = data[:3]
+            image, caption, index = data
+
 
         image = image.to(args.device)
         n_b = image.size(0)
