@@ -532,6 +532,7 @@ if __name__ == '__main__':
     parser.add_argument("--Iteration", type=int, default=50000, help="Number of distillation iterations")
     parser.add_argument("--eval_it", type=int, default=50, help="Evaluation frequency (iterations)")
     parser.add_argument("--num_eval", type=int, default=5, help="Number of evaluations per eval iteration")
+    parser.add_argument("--epoch_eval_train", type=int, default=1, help="Epochs for training in synset evaluation")
     parser.add_argument("--syn_steps", type=int, default=20, help="Number of synthetic training steps per iteration")
     parser.add_argument("--mini_batch_size", type=int, default=100, help="Mini batch size for synthetic update")
     parser.add_argument("--max_start_epoch", type=int, default=25, help="Maximum starting epoch for expert trajectory")
