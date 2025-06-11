@@ -523,7 +523,7 @@ def main(args):
     wandb.finish()
 
 if __name__ == '__main__':
-    # parser = argparse.ArgumentParser(description="Parameter Processing")
+    parser = argparse.ArgumentParser(description="Parameter Processing")
     parser.add_argument("--distributed", action="store_true", help="Enable DataParallel or DDP training")
     parser.add_argument("--dataset", type=str, default="roco", choices=["roco", "coco"], help="dataset")
     parser.add_argument("--num_queries", type=int, default=100, help="Number of queries for synthetic data")
