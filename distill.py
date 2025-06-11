@@ -478,6 +478,10 @@ def main(args):
             image_logits = syn_lr_img * x.float() @ this_y.float().t()  # Note: using syn_lr_img as logit scale.
             ground_truth = torch.arange(len(image_logits)).type_as(image_logits).long()
             contrastive_loss = (F.cross_entropy(image_logits, ground_truth) + F.cross_entropy(image_logits.t(), ground_truth)) / 2
+            print("[INFO] Allocated VRAM:", torch.cuda.memory_allocated() / 1024**3, "GB")
+            print("[INFO] Reserved VRAM:", torch.cuda.memory_reserved() / 1024**3, "GB")
+            torch.cuda.empty_cache()
+            gc.collect()
             img_grad = torch.autograd.grad(contrastive_loss, img_student_params[-1], create_graph=True)[0]
             txt_grad = torch.autograd.grad(contrastive_loss, txt_student_params[-1], create_graph=True)[0]
             print(contrastive_loss)
