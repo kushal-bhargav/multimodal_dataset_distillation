@@ -230,6 +230,73 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
 #     return net, accs, res
 
 
+# def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, text_embed_input, return_loss=False):
+#     """
+#     Evaluate the synset by training on a subset and then computing retrieval metrics via streaming.
+#     """
+#     print("DEBUG: Starting evaluate_synset()...")
+#     net = net.to(args.device)
+#     images_train = images_train.to(args.device)
+#     labels_train = labels_train.to(args.device)
+
+#     args.distill = True  # ✅ Force distill mode to ensure 2-value unpacking
+
+#     lr = float(args.lr_net)
+#     Epoch = int(args.epoch_eval_train)
+#     opt_img = torch.optim.SGD(net.image_encoder.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
+#     opt_txt = torch.optim.SGD(net.text_projection.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
+
+#     dst = TensorDataset(images_train, labels_train)
+#     loader = torch.utils.data.DataLoader(dst, batch_size=args.batch_train, shuffle=True, num_workers=0)
+
+#     accs, losses = [], []
+#     t0 = time.time()
+
+#     # --- Option 1: Wrap the training epoch call in AMP (if your epoch() supports it) ---
+#     # If you wish to use automatic mixed precision during training, consider integrating a GradScaler.
+#     # For example:
+#     #
+#     # scaler = torch.cuda.amp.GradScaler()
+#     # for ep in range(Epoch + 1):
+#     #    with torch.cuda.amp.autocast():
+#     #         l, a = epoch(ep, loader, net, opt_img, opt_txt, args)
+#     #    losses.append(l)
+#     #    accs.append(a)
+#     #
+#     # If your epoch() function already handles AMP, or if its backward pass is incompatible,
+#     # you might instead only use AMP during inference.
+    
+#     for ep in range(Epoch + 1):
+#         # --- Here we stick with the original epoch() call ---
+#         l, a = epoch(ep, loader, net, opt_img, opt_txt, args)
+#         losses.append(l)
+#         accs.append(a)
+#         print(f"DEBUG: Synset train epoch {ep} → Loss={l:.4f}, Acc={a:.4f}")
+
+#         # Clear cached memory after each epoch to help defragment GPU memory.
+#         torch.cuda.empty_cache()
+
+#         if ep == Epoch:
+#             print("DEBUG: Starting final synset evaluation with epoch_test()...")
+#             # Use AMP during evaluation to lower memory requirements
+#             with torch.cuda.amp.autocast():
+#                 with torch.no_grad():
+#                     res = epoch_test(testloader, net, args.device, text_embed_input)
+#             print("DEBUG: Synset evaluation result:", res)
+
+#     t1 = time.time() - t0
+#     print("DEBUG: evaluate_synset total time:", str(datetime.timedelta(seconds=int(t1))))
+#     return net, accs, res
+
+
+
+import os
+import gc
+import torch.cuda.amp
+
+# Optionally, at the very start of your script, you can set:
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, text_embed_input, return_loss=False):
     """
     Evaluate the synset by training on a subset and then computing retrieval metrics via streaming.
@@ -239,46 +306,39 @@ def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, 
     images_train = images_train.to(args.device)
     labels_train = labels_train.to(args.device)
 
-    args.distill = True  # ✅ Force distill mode to ensure 2-value unpacking
+    args.distill = True  # Force distill mode to ensure 2-value unpacking
 
     lr = float(args.lr_net)
     Epoch = int(args.epoch_eval_train)
     opt_img = torch.optim.SGD(net.image_encoder.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
     opt_txt = torch.optim.SGD(net.text_projection.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
 
-    dst = TensorDataset(images_train, labels_train)
+    dst = torch.utils.data.TensorDataset(images_train, labels_train)
     loader = torch.utils.data.DataLoader(dst, batch_size=args.batch_train, shuffle=True, num_workers=0)
 
+    # Initialize a GradScaler for AMP for training
+    scaler = torch.cuda.amp.GradScaler()
     accs, losses = [], []
     t0 = time.time()
 
-    # --- Option 1: Wrap the training epoch call in AMP (if your epoch() supports it) ---
-    # If you wish to use automatic mixed precision during training, consider integrating a GradScaler.
-    # For example:
-    #
-    # scaler = torch.cuda.amp.GradScaler()
-    # for ep in range(Epoch + 1):
-    #    with torch.cuda.amp.autocast():
-    #         l, a = epoch(ep, loader, net, opt_img, opt_txt, args)
-    #    losses.append(l)
-    #    accs.append(a)
-    #
-    # If your epoch() function already handles AMP, or if its backward pass is incompatible,
-    # you might instead only use AMP during inference.
-    
     for ep in range(Epoch + 1):
-        # --- Here we stick with the original epoch() call ---
-        l, a = epoch(ep, loader, net, opt_img, opt_txt, args)
+        # Instead of calling epoch() directly, assume we've modified it to use AMP and the scaler.
+        # For instance, inside your epoch(), you can wrap the forward pass like so:
+        #   with torch.cuda.amp.autocast():
+        #       loss, acc = net(images, captions, e)
+        # and use scaler.scale(loss).backward() before stepping the optimizers.
+        l, a = epoch(ep, loader, net, opt_img, opt_txt, args, scaler)
         losses.append(l)
         accs.append(a)
         print(f"DEBUG: Synset train epoch {ep} → Loss={l:.4f}, Acc={a:.4f}")
 
-        # Clear cached memory after each epoch to help defragment GPU memory.
+        # Clear cache and run garbage collection after each epoch to help defragment GPU memory.
         torch.cuda.empty_cache()
+        gc.collect()
 
         if ep == Epoch:
             print("DEBUG: Starting final synset evaluation with epoch_test()...")
-            # Use AMP during evaluation to lower memory requirements
+            # Use AMP during evaluation to save memory:
             with torch.cuda.amp.autocast():
                 with torch.no_grad():
                     res = epoch_test(testloader, net, args.device, text_embed_input)
