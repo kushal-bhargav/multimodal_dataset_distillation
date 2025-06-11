@@ -376,9 +376,23 @@ def main(args):
                         torchvision.utils.save_image(grid, os.path.join(save_dir, f"synthetic_images_{it}.png"))
                         with open(os.path.join(save_dir, f"synthetic_sentences_{it}.txt"), "w") as file:
                             file.write("\n".join(sentence_list))
-                        wandb.log({"Synthetic_Images": wandb.Image(torch.nan_to_num(grid.detach().cpu()))}, step=it)
-                        wandb.log({"Synthetic_Pixels": wandb.Histogram(torch.nan_to_num(image_save.detach().cpu()))}, step=it)
-                        wandb.log({"Synthetic_Sentences": wandb.Html("<br>".join(sentence_list))}, step=it)
+                        # wandb.log({"Synthetic_Images": wandb.Image(torch.nan_to_num(grid.detach().cpu()))}, step=it)
+                        # wandb.log({"Synthetic_Pixels": wandb.Histogram(torch.nan_to_num(image_save.detach().cpu()))}, step=it)
+                        # wandb.log({"Synthetic_Sentences": wandb.Html("<br>".join(sentence_list))}, step=it)
+                                            
+                        
+                        # Check if Weights & Biases run is active before logging
+                        if wandb.run is not None:
+                            # Ensure `grid`, `image_save`, and `sentence_list` exist and are valid before logging
+                            if grid is not None:
+                                wandb.log({"Synthetic_Images": wandb.Image(torch.nan_to_num(grid.detach().cpu()))}, step=it)
+                        
+                            if image_save is not None:
+                                wandb.log({"Synthetic_Pixels": wandb.Histogram(torch.nan_to_num(image_save.detach().cpu()))}, step=it)
+                        
+                            if sentence_list is not None and isinstance(sentence_list, list):  # Ensure it's a valid list
+                                wandb.log({"Synthetic_Sentences": wandb.Html("<br>".join(sentence_list))}, step=it)
+                                                
                         print("finish saving images")
                         for clip_val in [2.5]:
                             std = torch.std(image_save)
