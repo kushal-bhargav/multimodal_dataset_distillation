@@ -482,6 +482,7 @@ def main(args):
             print("[INFO] Reserved VRAM:", torch.cuda.memory_reserved() / 1024**3, "GB")
             torch.cuda.empty_cache()
             gc.collect()
+            
             try:
                 img_grad = torch.autograd.grad(
                     contrastive_loss, img_student_params[-1], create_graph=True
@@ -497,6 +498,7 @@ def main(args):
                     break  # or `continue` to skip step or exit loop safely
                 else:
                     raise
+
 
             
             # img_grad = torch.autograd.grad(contrastive_loss, img_student_params[-1], create_graph=True)[0]
