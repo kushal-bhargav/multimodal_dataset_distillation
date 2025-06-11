@@ -482,26 +482,79 @@ def main(args):
         img_param_dist_list = []
         txt_param_dist_list = []
 
+        # for step in range(args.syn_steps):
+        #     indices = torch.randperm(len(syn_images))
+        #     these_indices = indices[:args.mini_batch_size]
+        #     x = syn_images[these_indices]
+        #     this_y = syn_texts[these_indices]
+        #     if args.distributed:
+        #         img_forward_params = img_student_params[-1].unsqueeze(0).expand(torch.cuda.device_count(), -1)
+        #         txt_forward_params = txt_student_params[-1].unsqueeze(0).expand(torch.cuda.device_count(), -1)
+        #     else:
+        #         img_forward_params = img_student_params[-1]
+        #         txt_forward_params = txt_student_params[-1]
+        #     x = img_student_net(x, flat_param=img_forward_params)
+        #     x = x / x.norm(dim=1, keepdim=True)
+        #     this_y = txt_student_net(this_y, flat_param=txt_forward_params)
+        #     this_y = this_y / this_y.norm(dim=1, keepdim=True)
+        #     image_logits = syn_lr_img * x.float() @ this_y.float().t()  # Note: using syn_lr_img as logit scale.
+        #     ground_truth = torch.arange(len(image_logits)).type_as(image_logits).long()
+        #     contrastive_loss = (F.cross_entropy(image_logits, ground_truth) + F.cross_entropy(image_logits.t(), ground_truth)) / 2
+        #     print("[INFO] Allocated VRAM:", torch.cuda.memory_allocated() / 1024**3, "GB")
+        #     print("[INFO] Reserved VRAM:", torch.cuda.memory_reserved() / 1024**3, "GB")
+        #     torch.cuda.empty_cache()
+        #     gc.collect()
+
+
         for step in range(args.syn_steps):
             indices = torch.randperm(len(syn_images))
             these_indices = indices[:args.mini_batch_size]
             x = syn_images[these_indices]
             this_y = syn_texts[these_indices]
+            
             if args.distributed:
                 img_forward_params = img_student_params[-1].unsqueeze(0).expand(torch.cuda.device_count(), -1)
                 txt_forward_params = txt_student_params[-1].unsqueeze(0).expand(torch.cuda.device_count(), -1)
             else:
                 img_forward_params = img_student_params[-1]
                 txt_forward_params = txt_student_params[-1]
-            x = img_student_net(x, flat_param=img_forward_params)
+            
+            # Forward pass for image network with OOM protection
+            try:
+                x = img_student_net(x, flat_param=img_forward_params)
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    print("[OOM WARNING] img_student_net forward pass OOM. Skipping this step.")
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    continue  # Skip current step on OOM so that subsequent iterations start fresh
+                else:
+                    raise
             x = x / x.norm(dim=1, keepdim=True)
-            this_y = txt_student_net(this_y, flat_param=txt_forward_params)
+            
+            # Forward pass for text network with OOM protection
+            try:
+                this_y = txt_student_net(this_y, flat_param=txt_forward_params)
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    print("[OOM WARNING] txt_student_net forward pass OOM. Skipping this step.")
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    continue
+                else:
+                    raise
             this_y = this_y / this_y.norm(dim=1, keepdim=True)
-            image_logits = syn_lr_img * x.float() @ this_y.float().t()  # Note: using syn_lr_img as logit scale.
+            
+            image_logits = syn_lr_img * x.float() @ this_y.float().t()  # using syn_lr_img as logit scale.
             ground_truth = torch.arange(len(image_logits)).type_as(image_logits).long()
-            contrastive_loss = (F.cross_entropy(image_logits, ground_truth) + F.cross_entropy(image_logits.t(), ground_truth)) / 2
+            contrastive_loss = (F.cross_entropy(image_logits, ground_truth) +
+                                 F.cross_entropy(image_logits.t(), ground_truth)) / 2
+            
             print("[INFO] Allocated VRAM:", torch.cuda.memory_allocated() / 1024**3, "GB")
             print("[INFO] Reserved VRAM:", torch.cuda.memory_reserved() / 1024**3, "GB")
+            
+            # Explicitly delete tensors to help free up GPU memory
+            del x, this_y, image_logits, ground_truth, contrastive_loss
             torch.cuda.empty_cache()
             gc.collect()
             
