@@ -553,12 +553,12 @@ def main(args):
         grand_loss.backward()
         print("syn_lr_img: {}".format(syn_lr_img.grad))
         print("syn_lr_txt: {}".format(syn_lr_txt.grad))
-        wandb.log({"Synthetic_LR_Image": syn_lr_img.grad.detach().cpu()}, step=it)
-        wandb.log({"Synthetic_LR_Text": syn_lr_txt.grad.detach().cpu()}, step=it)
+        # wandb.log({"Synthetic_LR_Image": syn_lr_img.grad.detach().cpu()}, step=it)
+        # wandb.log({"Synthetic_LR_Text": syn_lr_txt.grad.detach().cpu()}, step=it)
         optimizer_lr.step()
         optimizer_img.step()
         optimizer_txt.step()
-        wandb.log({"Grand_Loss": grand_loss.detach().cpu(), "Start_Epoch": start_epoch}, step=it)
+        # wandb.log({"Grand_Loss": grand_loss.detach().cpu(), "Start_Epoch": start_epoch}, step=it)
         for param in img_student_params:
             del param
         for param in txt_student_params:
