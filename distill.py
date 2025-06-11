@@ -482,8 +482,25 @@ def main(args):
             print("[INFO] Reserved VRAM:", torch.cuda.memory_reserved() / 1024**3, "GB")
             torch.cuda.empty_cache()
             gc.collect()
-            img_grad = torch.autograd.grad(contrastive_loss, img_student_params[-1], create_graph=True)[0]
-            txt_grad = torch.autograd.grad(contrastive_loss, txt_student_params[-1], create_graph=True)[0]
+            try:
+                img_grad = torch.autograd.grad(
+                    contrastive_loss, img_student_params[-1], create_graph=True
+                )[0]
+                txt_grad = torch.autograd.grad(
+                    contrastive_loss, txt_student_params[-1], create_graph=True
+                )[0]
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    print("[OOM WARNING] Skipping this step due to CUDA OOM.")
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    break  # or `continue` to skip step or exit loop safely
+                else:
+                    raise
+
+            
+            # img_grad = torch.autograd.grad(contrastive_loss, img_student_params[-1], create_graph=True)[0]
+            # txt_grad = torch.autograd.grad(contrastive_loss, txt_student_params[-1], create_graph=True)[0]
             print(contrastive_loss)
             img_student_params.append(img_student_params[-1] - syn_lr_img * img_grad)
             txt_student_params.append(txt_student_params[-1] - syn_lr_txt * txt_grad)
