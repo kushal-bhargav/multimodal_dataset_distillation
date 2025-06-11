@@ -851,8 +851,15 @@ class CLIPModel_full(nn.Module):
         # ----- Feature extraction -----
         image_features = self.image_encoder(image)
         
-        if self.distill:
-            text_features = caption  # caption is already precomputed embedding
+        # if self.distill:
+        #     text_features = caption  # caption is already precomputed embedding
+        # else:
+        #     text_features = self.text_encoder(caption, device=device)
+
+        print("DEBUG: caption type =", type(caption))
+        
+        if self.distill or isinstance(caption, torch.Tensor):
+            text_features = caption  # it's already precomputed
         else:
             text_features = self.text_encoder(caption, device=device)
 
