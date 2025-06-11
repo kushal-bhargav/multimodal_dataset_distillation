@@ -468,6 +468,41 @@ def itm_eval(scores_i2t, scores_t2i, txt2img, img2txt):
         'r_mean': (tr1 + tr5 + tr10 + ir1 + ir5 + ir10) / 6
     }
 
+# def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, text_embed_input, return_loss=False):
+#     """
+#     Evaluate the synset by training on a subset and then computing retrieval metrics via streaming.
+#     """
+#     print("DEBUG: Starting evaluate_synset()...")
+#     net = net.to(args.device)
+#     images_train = images_train.to(args.device)
+#     labels_train = labels_train.to(args.device)
+
+#     args.distill = True  # ✅ Force distill mode to ensure 2-value unpacking
+
+#     lr = float(args.lr_net)
+#     Epoch = int(args.epoch_eval_train)
+#     opt_img = torch.optim.SGD(net.image_encoder.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
+#     opt_txt = torch.optim.SGD(net.text_projection.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
+
+#     dst = TensorDataset(images_train, labels_train)
+#     loader = torch.utils.data.DataLoader(dst, batch_size=args.batch_train, shuffle=True, num_workers=0)
+
+#     accs, losses = [], []
+#     t0 = time.time()
+#     for ep in range(Epoch + 1):
+#         l, a = epoch(ep, loader, net, opt_img, opt_txt, args)
+#         losses.append(l)
+#         accs.append(a)
+#         print(f"DEBUG: Synset train epoch {ep} → Loss={l:.4f}, Acc={a:.4f}")
+#         if ep == Epoch:
+#             print("DEBUG: Starting final synset evaluation with epoch_test()...")
+#             res = epoch_test(testloader, net, args.device, text_embed_input)
+#             print("DEBUG: Synset evaluation result:", res)
+#     t1 = time.time() - t0
+#     print("DEBUG: evaluate_synset total time:", str(datetime.timedelta(seconds=int(t1))))
+#     return net, accs, res
+
+
 def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, text_embed_input, return_loss=False):
     """
     Evaluate the synset by training on a subset and then computing retrieval metrics via streaming.
@@ -494,10 +529,17 @@ def evaluate_synset(it_eval, net, images_train, labels_train, testloader, args, 
         losses.append(l)
         accs.append(a)
         print(f"DEBUG: Synset train epoch {ep} → Loss={l:.4f}, Acc={a:.4f}")
+
+        # Free up unneeded cached GPU memory between epochs.
+        torch.cuda.empty_cache()
+
         if ep == Epoch:
             print("DEBUG: Starting final synset evaluation with epoch_test()...")
-            res = epoch_test(testloader, net, args.device, text_embed_input)
+            # Evaluate without tracking gradients to reduce memory usage
+            with torch.no_grad():
+                res = epoch_test(testloader, net, args.device, text_embed_input)
             print("DEBUG: Synset evaluation result:", res)
+
     t1 = time.time() - t0
     print("DEBUG: evaluate_synset total time:", str(datetime.timedelta(seconds=int(t1))))
     return net, accs, res
