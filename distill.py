@@ -554,7 +554,7 @@ def main(args):
             print("[INFO] Reserved VRAM:", torch.cuda.memory_reserved() / 1024**3, "GB")
             
             # Explicitly delete tensors to help free up GPU memory
-            del x, this_y, image_logits, ground_truth, contrastive_loss
+            del x, this_y, image_logits, ground_truth
             torch.cuda.empty_cache()
             gc.collect()
             
