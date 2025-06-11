@@ -426,8 +426,16 @@ def main(args):
                             wandb.log({f"Clipped_Reconstructed_Images/std_{clip_val}": wandb.Image(torch.nan_to_num(grid.detach().cpu()))}, step=it)
                     if args.draw:
                         print("finish saving draw")
-        wandb.log({"Synthetic_LR_Image": syn_lr_img.detach().cpu()}, step=it)
-        wandb.log({"Synthetic_LR_Text": syn_lr_txt.detach().cpu()}, step=it)
+        # wandb.log({"Synthetic_LR_Image": syn_lr_img.detach().cpu()}, step=it)
+        # wandb.log({"Synthetic_LR_Text": syn_lr_txt.detach().cpu()}, step=it)
+        
+        if wandb.run is not None:
+            wandb.log({
+                "Synthetic_LR_Image": syn_lr_img.grad.detach().cpu() if syn_lr_img.grad is not None else 0.0,
+                "Synthetic_LR_Text": syn_lr_txt.grad.detach().cpu() if syn_lr_txt.grad is not None else 0.0
+            }, step=it)
+
+        
         torch.cuda.empty_cache()
         student_net = CLIPModel_full(args)
         img_student_net = ReparamModule(student_net.image_encoder.to("cpu")).to("cuda")
