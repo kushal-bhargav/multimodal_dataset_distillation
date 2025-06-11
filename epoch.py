@@ -11,37 +11,84 @@ from torch.utils.data import TensorDataset
 import gc
 
 
-def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
+# def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
+#     print(f"DEBUG: Starting training epoch {e}...")
+#     net = net.to(args.device)
+#     net.train()
+#     loss_avg, acc_avg, num_exp = 0.0, 0.0, 0
+
+#     for i, data in tqdm(enumerate(dataloader), desc=f"Training Epoch {e}"):
+#         # if args.distill:
+#         #     image, caption = data[:2]
+#         # else:
+#         #     image, caption, index = data[:3]
+#         if args.distill:
+#             image, caption = data
+#         else:
+#             image, caption, index = data
+
+
+#         image = image.to(args.device)
+#         n_b = image.size(0)
+
+#         loss, acc = net(image, caption, e)
+#         loss_avg += loss.item() * n_b
+#         acc_avg += acc * n_b
+#         num_exp += n_b
+
+#         optimizer_img.zero_grad()
+#         optimizer_txt.zero_grad()
+#         loss.backward()
+#         optimizer_img.step()
+#         optimizer_txt.step()
+
+#         if i % 10 == 0:
+#             print(f"DEBUG: Batch {i} | Loss: {loss.item():.4f}, Acc: {acc:.4f}")
+
+#     loss_avg /= num_exp
+#     acc_avg /= num_exp
+#     print(f"DEBUG: Finished epoch {e}: Loss={loss_avg:.4f}, Acc={acc_avg:.4f}")
+#     return loss_avg, acc_avg
+
+
+
+import torch
+from torch.cuda.amp import autocast, GradScaler
+from tqdm import tqdm  # assuming you use tqdm for progress display
+
+def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args, scaler):
     print(f"DEBUG: Starting training epoch {e}...")
     net = net.to(args.device)
     net.train()
     loss_avg, acc_avg, num_exp = 0.0, 0.0, 0
 
     for i, data in tqdm(enumerate(dataloader), desc=f"Training Epoch {e}"):
-        # if args.distill:
-        #     image, caption = data[:2]
-        # else:
-        #     image, caption, index = data[:3]
         if args.distill:
             image, caption = data
         else:
             image, caption, index = data
 
-
         image = image.to(args.device)
         n_b = image.size(0)
-
-        loss, acc = net(image, caption, e)
+        
+        # Zero gradients before the forward pass.
+        optimizer_img.zero_grad()
+        optimizer_txt.zero_grad()
+        
+        # Use autocast to perform the forward pass in mixed precision.
+        with autocast():
+            loss, acc = net(image, caption, e)
+        
         loss_avg += loss.item() * n_b
         acc_avg += acc * n_b
         num_exp += n_b
-
-        optimizer_img.zero_grad()
-        optimizer_txt.zero_grad()
-        loss.backward()
-        optimizer_img.step()
-        optimizer_txt.step()
-
+        
+        # Scale the loss and backpropagate.
+        scaler.scale(loss).backward()
+        scaler.step(optimizer_img)
+        scaler.step(optimizer_txt)
+        scaler.update()
+        
         if i % 10 == 0:
             print(f"DEBUG: Batch {i} | Loss: {loss.item():.4f}, Acc: {acc:.4f}")
 
@@ -49,6 +96,7 @@ def epoch(e, dataloader, net, optimizer_img, optimizer_txt, args):
     acc_avg /= num_exp
     print(f"DEBUG: Finished epoch {e}: Loss={loss_avg:.4f}, Acc={acc_avg:.4f}")
     return loss_avg, acc_avg
+    
 
 
 @torch.no_grad()
