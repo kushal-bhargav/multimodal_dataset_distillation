@@ -525,6 +525,7 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Parameter Processing")
     parser.add_argument("--distributed", action="store_true", help="Enable DataParallel or DDP training")
+    parser.add_argument("--max_files", type=int, default=1, help="Number of max expert buffer files to cycle through")
     parser.add_argument("--dataset", type=str, default="roco", choices=["roco", "coco"], help="dataset")
     parser.add_argument("--num_queries", type=int, default=100, help="Number of queries for synthetic data")
     parser.add_argument("--lr_img", type=float, default=1000, help="Learning rate for synthetic images")
