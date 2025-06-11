@@ -370,7 +370,7 @@ def main(args):
                         if args.dataset != "ImageNet":
                             upsampled = torch.repeat_interleave(upsampled, repeats=4, dim=2)
                             upsampled = torch.repeat_interleave(upsampled, repeats=4, dim=3)
-                        grid = torchvision.utils.make_grid(upsampled, nrow=10, normalize=True, scale_each=True)
+                        grid = torchvision.utils.make_grid(upsampled.detach().cpu(), nrow=10, normalize=True, scale_each=True)
                         sentence_list = nearest_neighbor(train_sentences, text_syn.cpu(), train_caption_embed)
                         sentence_list = sentence_list[:90]
                         torchvision.utils.save_image(grid, os.path.join(save_dir, f"synthetic_images_{it}.png"))
@@ -412,7 +412,7 @@ def main(args):
                         if args.dataset != "ImageNet":
                             upsampled = torch.repeat_interleave(upsampled, repeats=4, dim=2)
                             upsampled = torch.repeat_interleave(upsampled, repeats=4, dim=3)
-                        grid = torchvision.utils.make_grid(upsampled, nrow=10, normalize=True, scale_each=True)
+                        grid = torchvision.utils.make_grid(upsampled.detach().cpu(), nrow=10, normalize=True, scale_each=True)
                         wandb.log({"Reconstructed_Images": wandb.Image(torch.nan_to_num(grid))}, step=it)
                         wandb.log({"Reconstructed_Pixels": wandb.Histogram(torch.nan_to_num(image_save.detach().cpu()))}, step=it)
                         for clip_val in [2.5]:
@@ -422,7 +422,7 @@ def main(args):
                             if args.dataset != "ImageNet":
                                 upsampled = torch.repeat_interleave(upsampled, repeats=4, dim=2)
                                 upsampled = torch.repeat_interleave(upsampled, repeats=4, dim=3)
-                            grid = torchvision.utils.make_grid(upsampled, nrow=10, normalize=True, scale_each=True)
+                            grid = torchvision.utils.make_grid(upsampled.detach().cpu(), nrow=10, normalize=True, scale_each=True)
                             wandb.log({f"Clipped_Reconstructed_Images/std_{clip_val}": wandb.Image(torch.nan_to_num(grid.detach().cpu()))}, step=it)
                     if args.draw:
                         print("finish saving draw")
