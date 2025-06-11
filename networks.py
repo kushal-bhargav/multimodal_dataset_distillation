@@ -738,20 +738,77 @@ class TextEncoder(nn.Module):
 
 
 
+# class CLIPModel_full(nn.Module):
+#     def __init__(
+#         self,
+#         args,
+#         temperature=1.0,
+#         eval_stage=False
+#     ):
+#         super().__init__()
+        
+#         if args.image_encoder == 'nfnet':
+#             if eval_stage:
+#                 self.image_embedding = 1000#2048
+#             else:
+#                 self.image_embedding = 2304
+#         elif args.image_encoder == 'convnet':
+#             self.image_embedding = 768
+#         elif args.image_encoder == 'resnet18':
+#             self.image_embedding = 512
+#         elif args.image_encoder == 'convnext':
+#             self.image_embedding = 640
+#         else:
+#             self.image_embedding = 1000
+#         if args.text_encoder == 'clip':
+#             self.text_embedding = 512 
+#         elif args.text_encoder == 'bert':
+#             self.text_embedding = 768 
+#         else:
+#             raise NotImplementedError
+        
+#         self.image_encoder =  ImageEncoder(args, eval_stage=eval_stage)
+#         self.text_encoder = TextEncoder(args)
+
+#         if args.only_has_image_projection:
+#             self.image_projection = ProjectionHead(embedding_dim=self.image_embedding)
+#         self.text_projection = ProjectionHead(embedding_dim=self.text_embedding, projection_dim=self.image_embedding).to('cuda')
+#         self.temperature = temperature
+#         #self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+#         self.args = args
+#         self.distill = args.distill
+
+#     def forward(self, image, caption, epoch):
+#         self.image_encoder = self.image_encoder.to('cuda')
+#         self.text_encoder = self.text_encoder.to('cuda')
+        
+#         image_features = self.image_encoder(image)
+#         text_features = caption if self.distill else self.text_encoder(caption) 
+
+#         use_image_project = False
+#         im_embed = image_features.float() if not use_image_project else self.image_projection(image_features.float())
+#         txt_embed = self.text_projection(text_features.float())
+
+#         combined_image_features = im_embed 
+#         combined_text_features = txt_embed
+#         image_features = combined_image_features / combined_image_features.norm(dim=1, keepdim=True)
+#         text_features = combined_text_features / combined_text_features.norm(dim=1, keepdim=True)
+
+
+#         image_logits = np.exp(np.log(1 / 0.07)) * image_features @ text_features.t() 
+#         ground_truth = torch.arange(len(image_logits)).type_as(image_logits).long()
+#         loss = (F.cross_entropy(image_logits, ground_truth) + F.cross_entropy(image_logits.t(), ground_truth))/2
+#         acc_i = (torch.argmax(image_logits, 1) == ground_truth).sum().item()
+#         acc_t = (torch.argmax(image_logits, 0) == ground_truth).sum().item()
+#         acc = (acc_i + acc_t) / 2
+#         return loss, acc
 class CLIPModel_full(nn.Module):
-    def __init__(
-        self,
-        args,
-        temperature=1.0,
-        eval_stage=False
-    ):
+    def __init__(self, args, temperature=1.0, eval_stage=False):
         super().__init__()
 
+        # ----- Set embedding dimensions -----
         if args.image_encoder == 'nfnet':
-            if eval_stage:
-                self.image_embedding = 1000#2048
-            else:
-                self.image_embedding = 2304
+            self.image_embedding = 2304 if not eval_stage else 1000
         elif args.image_encoder == 'convnet':
             self.image_embedding = 768
         elif args.image_encoder == 'resnet18':
@@ -760,45 +817,66 @@ class CLIPModel_full(nn.Module):
             self.image_embedding = 640
         else:
             self.image_embedding = 1000
+
         if args.text_encoder == 'clip':
-            self.text_embedding = 512 
+            self.text_embedding = 512
         elif args.text_encoder == 'bert':
-            self.text_embedding = 768 
+            self.text_embedding = 768
         else:
-            raise NotImplementedError
-        
-        self.image_encoder =  ImageEncoder(args, eval_stage=eval_stage)
+            raise NotImplementedError("Unsupported text encoder:", args.text_encoder)
+
+        # ----- Encoders -----
+        self.image_encoder = ImageEncoder(args, eval_stage=eval_stage)
         self.text_encoder = TextEncoder(args)
 
+        # ----- Projection layers -----
         if args.only_has_image_projection:
             self.image_projection = ProjectionHead(embedding_dim=self.image_embedding)
-        self.text_projection = ProjectionHead(embedding_dim=self.text_embedding, projection_dim=self.image_embedding).to('cuda')
+        self.text_projection = ProjectionHead(
+            embedding_dim=self.text_embedding,
+            projection_dim=self.image_embedding
+        ).to('cuda')  # Optional: move later
+
+        # ----- Other args -----
         self.temperature = temperature
-        #self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         self.args = args
         self.distill = args.distill
 
     def forward(self, image, caption, epoch):
-        self.image_encoder = self.image_encoder.to('cuda')
-        self.text_encoder = self.text_encoder.to('cuda')
-        
-        image_features = self.image_encoder(image)
-        text_features = caption if self.distill else self.text_encoder(caption) 
+        device = image.device  # assume image is already on correct device
+        self.image_encoder = self.image_encoder.to(device)
+        self.text_encoder = self.text_encoder.to(device)
+        self.text_projection = self.text_projection.to(device)
 
-        use_image_project = False
-        im_embed = image_features.float() if not use_image_project else self.image_projection(image_features.float())
+        # ----- Feature extraction -----
+        image_features = self.image_encoder(image)
+        
+        if self.distill:
+            text_features = caption  # caption is already precomputed embedding
+        else:
+            text_features = self.text_encoder(caption, device=device)
+
+        # ----- Projection -----
+        # Optional: only use image projection if explicitly set
+        use_image_project = hasattr(self, 'image_projection')
+        im_embed = (self.image_projection(image_features.float())
+                    if use_image_project else image_features.float())
         txt_embed = self.text_projection(text_features.float())
 
-        combined_image_features = im_embed 
-        combined_text_features = txt_embed
-        image_features = combined_image_features / combined_image_features.norm(dim=1, keepdim=True)
-        text_features = combined_text_features / combined_text_features.norm(dim=1, keepdim=True)
+        # ----- Normalize -----
+        image_features = im_embed / im_embed.norm(dim=1, keepdim=True)
+        text_features = txt_embed / txt_embed.norm(dim=1, keepdim=True)
 
+        # ----- Contrastive loss -----
+        logit_scale = np.exp(np.log(1 / 0.07))  # or use learned parameter
+        image_logits = logit_scale * image_features @ text_features.t()
+        ground_truth = torch.arange(len(image_logits), device=device)
 
-        image_logits = np.exp(np.log(1 / 0.07)) * image_features @ text_features.t() 
-        ground_truth = torch.arange(len(image_logits)).type_as(image_logits).long()
-        loss = (F.cross_entropy(image_logits, ground_truth) + F.cross_entropy(image_logits.t(), ground_truth))/2
+        loss = (F.cross_entropy(image_logits, ground_truth) +
+                F.cross_entropy(image_logits.t(), ground_truth)) / 2
+
         acc_i = (torch.argmax(image_logits, 1) == ground_truth).sum().item()
         acc_t = (torch.argmax(image_logits, 0) == ground_truth).sum().item()
         acc = (acc_i + acc_t) / 2
+
         return loss, acc
